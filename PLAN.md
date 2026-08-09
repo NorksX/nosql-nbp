@@ -153,7 +153,9 @@ baze/
 ├── fdb/                           # sub-team B
 │   ├── load_l1.py  load_l2.py  queries.py
 ├── bench/
-│   ├── harness.py  plots.py  results/
+│   ├── queries.py                 # ✅ 10 queries × L1/L2 × both databases
+│   ├── harness.py                 # ✅ correctness gate + latency sweep → results/
+│   ├── report.py  plots.py  results/
 └── docs/
     ├── elaborat.md  presentation/
 ```
@@ -430,6 +432,11 @@ L1 costs 31 % more space, almost all of it index keys, and writes ~390× more ke
 
 ## Phase 3 — КОРИСТЕЊЕ НА ПОДАТОЦИТЕ
 
+> **Status: all ten queries are implemented four times** — L1 and L2, on each database —
+> in `bench/queries.py`, and all four implementations of every query return the same
+> answer. ⬜ `common/queries.md` (the DB-agnostic write-up, with captured output and
+> per-query limitations) is still to write.
+
 Ten queries, spanning the three categories the assignment requires (6–10 needed). Defined DB-agnostically in `common/queries.md`, implemented twice.
 
 The access path each model offers for each of these ten is already worked out in [common/schema.md §5](common/schema.md) — queries 1, 2, 4, 5 favour L1 and queries 3, 6, 7, 8, 9, 10 favour L2. Query 7 is a known weak spot in L1 (it needs language *and* a year range, and L1 has no composite `(lang, year)` index); that is kept as a finding, with the index that would fix it written down for a Phase 4 tuning experiment. What `queries.md` still has to pin down is the exact parameters — which id, which year, which genre pair — so both sub-teams measure the identical thing.
@@ -480,7 +487,7 @@ Sub-team A → Oracle NoSQL CE. Sub-team B → FoundationDB. Shared/joint: datas
 | 2 | ✅ Dataset analysis + `common/` key spec ([schema.md](common/schema.md)). ⬜ Query definitions (`common/queries.md`) still to write | Joint — must be agreed **before** loaders are written |
 | 3 | L1 loader + verification | Each sub-team |
 | 4 | L2 loader + chunking | Each sub-team |
-| 5 | 10 queries implemented | Each sub-team |
+| 5 | ✅ 10 queries implemented, L1 and L2, both databases (`bench/queries.py`) | Each sub-team |
 | 6 | Benchmark harness + runs (incl. 1 vs 4 CPU) | Joint harness, separate runs |
 | 7 | Charts + елаборат + 10-min presentation | Joint |
 
