@@ -20,7 +20,7 @@ These were checked against the actual data and the actual container registries, 
 | Total records | **109,222** |
 | Unique `id` | 109,222 (no duplicates across files — safe as primary key) |
 | `id_imdb` present | 109,222 (100% — usable as an alternate key) |
-| Total size | ~135 MB raw |
+| Total size | **70.85 MB** in `data/` (`du -sb` = 70,847,803 B). Budget ~142 MB of disk: kagglehub keeps an identical copy in `~/.cache/kagglehub` |
 | Schema | Fully flat, 15 fields, no missing keys anywhere |
 
 Record shape:
@@ -59,7 +59,8 @@ Record shape:
 | Distinct languages | 137 | long tail — only the top 10 are worth reporting |
 
 - Files are grouped by *fetch* year, not by `release_date` — the 2000 file contains a movie released 2001-04-07. Always derive the year from `release_date`.
-- Encoding matters: the raw files serialize non-ASCII as `\uXXXX` escapes (70.6 MB). Re-encoded as UTF-8 (`ensure_ascii=False`) the same data is **63.5 MB**, and the largest single record drops from 5,264 to **2,021 bytes**. Both databases store the UTF-8 form, so sizes are comparable.
+- Encoding: the raw files serialize non-ASCII as `\uXXXX` escapes. Re-encoding as UTF-8 (`ensure_ascii=False`) saves far less than first estimated — **70.74 MB → 69.87 MB, a 1.2 % saving**, because only a small share of the corpus is non-ASCII. (An earlier revision of this plan claimed 70.6 → 63.5 MB; that figure does not reproduce and every number derived from it has been recomputed.) The effect is real per *record* — the largest single record does drop from 5,264 to **2,021 bytes** — just not corpus-wide. Both databases store the UTF-8 form, so sizes are comparable either way.
+- After normalization (JSON `null` dropped, `year` added, keys sorted) the stored corpus is **68.67 MB**. This is the number the Phase 4 on-disk footprints are compared against. All of these are reproduced by `python -m common.verify_schemas`.
 
 ### 0.2 Container images — the cross-platform question is solved
 
@@ -121,7 +122,7 @@ Goal: every teammate, on any machine, runs `docker compose up -d` in two directo
 
 - Docker Desktop ≥ 4.30 (or Docker Engine + compose plugin on Linux).
 - Docker Desktop resources: **≥ 6 GB RAM, ≥ 4 CPUs**. Both JVM-based kvlite and a multi-process FDB cluster need headroom, and Phase 4 pins CPU counts explicitly.
-- Python 3.11 on the host for orchestration scripts. ✅ `.venv` recreated as **3.11.15** (`uv venv --python 3.11 .venv`), matching the client containers.
+- Python 3.11 on the host for orchestration scripts, matching the client containers. ⚠️ On the Fedora x64 machine `.venv` is currently **3.14.6**, not 3.11 — harmless for `download.py` and `common/verify_schemas.py`, which are pure stdlib, but recreate it with `uv venv --python 3.11 .venv` before running anything whose timings feed the report.
 - Git, ~2 GB free disk.
 - Run `python download.py` once to populate `data/` (it is gitignored — each member downloads it themselves).
 
@@ -141,9 +142,12 @@ baze/
 │       ├── Dockerfile.client
 │       └── README.md              # install log → elaborate
 ├── common/
-│   ├── dataset.py                 # JSONL reader, normalization, genre map
-│   ├── keyspec.py                 # shared key-design constants (both teams)
-│   └── queries.md                 # the 10 query definitions, DB-agnostic
+│   ├── dataset.py                 # ✅ JSONL reader, normalization, genre map
+│   ├── keyspec.py                 # ✅ both schemas: FDB keys + Oracle DDL
+│   ├── schema.md                  # ✅ L1/L2 design, measurements, access paths
+│   ├── verify_schemas.py          # ✅ offline check of both schemas vs the data
+│   ├── apply_schema.py            # ✅ create/drop either schema in either DB
+│   └── queries.md                 # ⬜ the 10 query definitions, DB-agnostic
 ├── oracle/                        # sub-team A
 │   ├── load_l1.py  load_l2.py  queries.py
 ├── fdb/                           # sub-team B
@@ -314,11 +318,47 @@ That contrast is a genuine finding, not filler: Oracle NoSQL trades a slow start
 
 The assignment explicitly asks for **two different aggregation levels**. Both sub-teams implement the same two models so the Phase 4 comparison is apples-to-apples.
 
-A shared `common/` module should hold the key format constants and query definitions so neither team drifts — **written by hand, one piece at a time, once the team understands the shape of the data.** Not scaffolded up front.
+> **Status: both schemas are designed, written, and verified live on both databases with
+> the full 109,222-record corpus.** ✅ Every key family loads and reads back correctly, and
+> the two databases return identical answers to identical questions.
+>
+> The authoritative specification is **[common/schema.md](common/schema.md)** (design, DDL,
+> access-path matrix, live results) and **`common/keyspec.py`** (the executable form). The
+> sketch below is kept for context and has been reconciled with what was actually built;
+> where the two differ, `keyspec.py` wins.
+>
+> ```bash
+> python -m common.verify_schemas                      # offline, ~5 s, no DB needed
+> docker exec kv-client  python -m common.apply_schema # DDL (FoundationDB needs none)
+> docker exec kv-client  python -m common.live_check   # full load + verify, ~95 s
+> docker exec fdb-client python -m common.live_check   # full load + verify, ~19 s
+> ```
+>
+> Reference load timings, from those runs:
+>
+> | | Oracle NoSQL | FoundationDB |
+> |---|---|---|
+> | L1 | 109,222 rows, **83.3 s** (1,311 rows/s) | 730,414 keys, **16.0 s** (45,775 keys/s) |
+> | L2 | 1,867 rows, **6.9 s** | 1,867 keys, **0.5 s** |
+> | Store after both models | 228.9 MB (`/kvroot/kvstore`) | 152 MB accounted KV, 345 MB disk |
+>
+> Not like-for-like — Oracle does one HTTP put per row with server-side index maintenance,
+> FoundationDB batches ~1,000 pairs per transaction and writes its own index keys. Phase 4
+> makes it fair. Note both stores currently hold **L1 and L2 together**, so the footprints
+> are not per-model; loading one model at a time is a Phase 4 prerequisite.
+>
+> Still open: production loaders (`oracle/load_l*.py`, `fdb/load_l*.py`) — restartable, with
+> progress and per-model timing — and `common/queries.md`.
 
-Two things were confirmed against the running databases and are worth keeping in mind when that code does get written:
-- Oracle NoSQL accepts an index on an array inside a JSON column (`doc.genre_ids[] AS INTEGER`) and a composite primary key with a partition key (`PRIMARY KEY(SHARD(year), chunk)`).
-- FoundationDB keys sort in order, so a negated scaled integer inside the key gives descending-popularity reads with no sorting.
+A shared `common/` module holds the key format constants and query definitions so neither team drifts — **written by hand, one piece at a time, once the team understands the shape of the data.** Not scaffolded up front. Written so far: `dataset.py`, `keyspec.py`, `schema.md`, `verify_schemas.py`, `apply_schema.py`.
+
+Confirmed against the running databases — all of these are now observed, not assumed:
+- Oracle NoSQL accepts an index on an array inside a JSON column (`doc.genre_ids[] AS INTEGER`), the same index with a trailing scalar (`..., doc.popularity AS DOUBLE`), and a composite primary key with a partition key (`PRIMARY KEY(SHARD(year), chunk)`). All 11 DDL statements applied first time.
+- FoundationDB keys sort in order, so a negated scaled integer inside the key gives descending-popularity reads with no sorting — verified to return the identical top-20 that Oracle's `ORDER BY ... DESC LIMIT 20` returns.
+- Array containment in Oracle NoSQL SQL is written **`t.doc.genre_ids[] =any 18`**; `live_check.py` probes the alternatives and prints whichever the running version accepts.
+- Server-side `GROUP BY` works over a JSON path (`GROUP BY t.doc.original_language`, 137 groups). FoundationDB has no equivalent and must scan client-side — expect this to be the largest single gap in Phase 4.
+- L2 chunks must be batched **by bytes, not by count**: at ~85 KB per chunk, the 1,000-pair batch that suits L1 would build an 85 MB transaction against FoundationDB's 10 MB limit. `keyspec.batched()` bounds by both, at 4 MB.
+- A half-open key filter needs a genuinely two-sided range. `fdb.tuple.range(("idx","lang","en",501))` bounds the movies whose vote count is *exactly* 501 and returns 1 row, not the 2,611 with more than 500. `keyspec.KeyRange` carries the separate start bound so this cannot be written by accident.
 
 ### Model L1 — fine-grained (one movie per key)
 
@@ -326,11 +366,14 @@ Pure key-value, one record per key:
 
 | Purpose | Oracle NoSQL | FoundationDB |
 |---|---|---|
-| Primary | `movies(id INTEGER, doc JSON, PRIMARY KEY(id))` | `("movie", id) → msgpack/json(record)` |
-| By IMDb | index / `imdb` field | `("idx","imdb", imdb_id) → id` |
-| By genre | index on `doc.genre_ids[]` | `("idx","genre", genre_id, id) → ø` |
-| By language | index on `doc.original_language` | `("idx","lang", lang, id) → ø` |
-| By year | index on derived `year` | `("idx","year", year, id) → ø` |
+| Primary | `l1_movies(id INTEGER, doc JSON, PRIMARY KEY(id))` | `("movie", id) → encode(record)` |
+| By IMDb | `idx_imdb` on `doc.id_imdb` | `("idx","imdb", imdb_id) → pack((id,))` |
+| By genre | `idx_genre` on `doc.genre_ids[]` | `("idx","genre", genre_id, id) → ø` |
+| By genre, ranked | `idx_genre_pop` on `(doc.genre_ids[], doc.popularity)` | `("idx","genre_pop", genre_id, −pop×1000, id) → ø` |
+| By language | `idx_lang_votes` on `(doc.original_language, doc.vote_count)` | `("idx","lang", lang, vote_count, id) → ø` |
+| By year | `idx_year` on derived `year` | `("idx","year", year, id) → ø` |
+
+**Changed from the original sketch:** the language index is composite, `(lang, vote_count, id)` rather than `(lang, id)`. Query 4 (language X with `vote_count > 500`) then starts its range read at `("idx","lang", X, 501)` instead of scanning the language and filtering client-side — measured live, **2,611 entries read instead of 58,015** for English. The entry count is unchanged. Table names gained `l1_`/`l2_` prefixes so every SQL snippet in the елаборат says which model it belongs to.
 
 Exact key population (counted, not estimated): 109,222 movie records + 621,192 index entries = **730,414 keys**.
 
@@ -345,26 +388,51 @@ Exact key population (counted, not estimated): 109,222 movie records + 621,192 i
 
 ### Model L2 — coarse-grained (aggregate per year / per genre-year)
 
-| Key | Value |
-|---|---|
-| `("year", 2017, chunk)` | that year's movies as JSON-array chunks — the largest year is 2017 at **4.38 MB / 7,871 movies**, 44× over FDB's value limit, so chunking at 90 KB is mandatory (**744 chunks** across 49 year buckets) |
-| `("stats", "genre_year", genre_id, year)` | precomputed `{count, avg_vote, avg_popularity, sum_votes}` |
+| Key | Oracle NoSQL table | Value | Entries |
+|---|---|---|---|
+| `("year", year, chunk)` | `l2_movies_by_year` | that year's movies as a JSON array, ≤ 90 KB | **806** |
+| `("stats","genre_year", genre_id, year)` | `l2_genre_year_stats` | `{n_movies, sum_vote, avg_vote, sum_popularity, avg_popularity, sum_votes}` | 495 |
+| `("stats","lang", lang)` | `l2_lang_stats` | `{n_movies, sum_popularity, avg_popularity}` | 137 |
+| `("stats","year", year)` | `l2_year_stats` | `{n_movies, avg_popularity, n_rated, avg_vote_rated}` | 49 |
+| `("top","genre", genre_id, pos)` | `l2_genre_top` | `encode(record)`, positions 0–19 | 380 |
+| | | | **1,867** |
+
+**Changed from the original sketch:** the last three families are new. With only chunks and genre-year stats, L2 could answer query 8 and essentially nothing else — six of the ten queries would have degraded to a full scan and the comparison would have been one-sided. The additions cost 566 keys and 0.33 MB and let L2 answer queries 6, 9 and 10 directly.
+
+**Corrected numbers:** the largest year is 2017 at **4.95 MB / 7,871 movies** (49× over FDB's value limit), and the corpus packs into **806 chunks** across 49 buckets, not 744. The earlier figures were derived from the 63.5 MB corpus size that does not reproduce (see §0.1). Bucket sizes are very uneven — 27 of the 49 years fit in one chunk, 2017 needs 56. Largest chunk actually produced: 89,999 B against a 90,000 B target and a 100,000 B hard limit.
+
+Deliberately **no secondary indexes on L2**. Adding one turns it back into L1 and erases the contrast the whole comparison rests on.
 
 L2 is where the interesting limits show up, and both are worth a paragraph in the report:
-- **FoundationDB:** value limit **100 KB**, key limit 10 KB, transaction limit **10 MB / 5 seconds**. A whole year cannot be one value — it must be split into ~100 KB chunks under `("year", 2014, chunk_no)`. Batch writes at ~500–1,000 KV pairs per transaction with retry on `transaction_too_old`.
+- **FoundationDB:** value limit **100 KB**, key limit 10 KB, transaction limit **10 MB / 5 seconds**. A whole year cannot be one value — it must be split into ~90 KB chunks under `("year", 2014, chunk_no)`. Batch writes at ~500–1,000 KV pairs per transaction with retry on `transaction_too_old`. Verified headroom: largest L1 value 2,021 B, largest key 43 B — both models sit far inside the key and value limits.
 - **Oracle NoSQL:** a large JSON column is accepted but request-size and read-unit limits apply; measure and document where it degrades.
 
 ### Loader design
 
-Shared skeleton in `common/dataset.py`: stream the JSONL line by line (never `json.load` a whole file — they are not JSON arrays), derive `year` from `release_date`, normalize `null` → absent, emit `(key, value)` pairs. Each team writes `load_l1.py` / `load_l2.py` on top. Loaders must be **idempotent and restartable**, and must record wall-clock load time + resulting on-disk size — both feed Phase 4.
+✅ Shared skeleton written — `common/dataset.py` streams the JSONL line by line (never `json.load` a whole file — they are not JSON arrays), derives `year` from `release_date`, normalizes `null` → absent, forces `popularity`/`vote_average` to float (a typed JSON index over `doc.popularity AS DOUBLE` rejects a value serialized as `1` instead of `1.0`), and emits canonical bytes via `encode()`. `common/keyspec.py` turns a record into its keys. Each team writes `load_l1.py` / `load_l2.py` on top. Loaders must be **idempotent and restartable**, and must record wall-clock load time + resulting on-disk size — both feed Phase 4. `common/apply_schema.py --drop --yes` resets either model to a clean state.
 
-**Deliverable:** ER-style / key-space diagram of both models, the loader code, load timings, and a written analysis of why each model suits or fights each database.
+Expected logical footprint, to compare the Phase 4 on-disk figures against and expose each engine's amplification:
+
+| | L1 | L2 |
+|---|---|---|
+| Record / chunk values | 68.67 MB | 68.78 MB |
+| Primary keys | 1.75 MB | 0.02 MB |
+| Index entries | 19.93 MB (621,192) | — |
+| Precomputed aggregates | — | 0.33 MB |
+| **Total** | **90.35 MB** | **69.13 MB** |
+| Keys written per movie | 6.7 | 0.017 |
+
+L1 costs 31 % more space, almost all of it index keys, and writes ~390× more keys during load. That is the trade the two models exist to measure.
+
+**Deliverable:** ER-style / key-space diagram of both models, the loader code, load timings, and a written analysis of why each model suits or fights each database. The key-space tables and the per-query access-path matrix in [common/schema.md](common/schema.md) are the written half of this; the diagram and the timings still need doing.
 
 ---
 
 ## Phase 3 — КОРИСТЕЊЕ НА ПОДАТОЦИТЕ
 
 Ten queries, spanning the three categories the assignment requires (6–10 needed). Defined DB-agnostically in `common/queries.md`, implemented twice.
+
+The access path each model offers for each of these ten is already worked out in [common/schema.md §5](common/schema.md) — queries 1, 2, 4, 5 favour L1 and queries 3, 6, 7, 8, 9, 10 favour L2. Query 7 is a known weak spot in L1 (it needs language *and* a year range, and L1 has no composite `(lang, year)` index); that is kept as a finding, with the index that would fix it written down for a Phase 4 tuning experiment. What `queries.md` still has to pin down is the exact parameters — which id, which year, which genre pair — so both sub-teams measure the identical thing.
 
 **Simple (filters):**
 1. Point lookup of a movie by TMDB `id`.
@@ -409,7 +477,7 @@ Sub-team A → Oracle NoSQL CE. Sub-team B → FoundationDB. Shared/joint: datas
 | Step | Work | Owner |
 |---|---|---|
 | 1 | ✅ Compose stacks up + install logs (pending one x64 run) | Both, in parallel |
-| 2 | Dataset analysis + `common/` key spec & query definitions | Joint — must be agreed **before** loaders are written |
+| 2 | ✅ Dataset analysis + `common/` key spec ([schema.md](common/schema.md)). ⬜ Query definitions (`common/queries.md`) still to write | Joint — must be agreed **before** loaders are written |
 | 3 | L1 loader + verification | Each sub-team |
 | 4 | L2 loader + chunking | Each sub-team |
 | 5 | 10 queries implemented | Each sub-team |

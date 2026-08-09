@@ -1,0 +1,523 @@
+"""The two schemas — L1 and L2 — for both databases. Single source of truth.
+
+Phase 2 asks for two *different* aggregation levels so Phase 4 has something to
+compare. The two are deliberately opposite in shape:
+
+    L1  fine-grained    730,414 small keys, one movie per key, five secondary
+                        indexes. Point lookups and selective filters are one or
+                        two operations; aggregates degrade to a full scan.
+
+    L2  coarse-grained  ~1,000 keys, movies packed into ~90 KB per-year chunks
+                        plus precomputed aggregates. Reports are one or a few
+                        reads; point lookup by id has no entry point and
+                        degrades to scanning every chunk.
+
+Both models hold the *same* 109,222 records, byte-for-byte identical values from
+``common.dataset.encode``. The only thing that differs is how they are keyed and
+grouped, which is what makes the Phase 4 numbers attributable to the schema.
+
+FoundationDB keys are given here as Python tuples. The FDB loaders pack them
+with ``fdb.tuple.pack`` / ``fdb.Subspace``; this module deliberately does not
+import ``fdb``, because the Oracle client container does not have it installed.
+Oracle NoSQL gets the equivalent shape as DDL, further down.
+
+Everything measured (key counts, chunk counts, byte sizes) is verified against
+the real data by ``common/verify_schemas.py``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator
+from typing import NamedTuple
+
+from common.dataset import YEAR_UNKNOWN, encode
+
+
+class KeyRange(NamedTuple):
+    """A range read: everything under ``prefix``, optionally starting part-way.
+
+    ``prefix`` bounds the read on both sides. ``start``, when given, moves the
+    lower bound forward to a longer key *inside* that prefix — which is how a
+    half-open filter like ``vote_count > 500`` is expressed. A single prefix
+    tuple cannot say this: ``("idx","lang","en",501)`` bounds the keys whose
+    vote count is exactly 501, not the ones from 501 upward.
+
+    FoundationDB:
+        bounds = fdb.tuple.range(r.prefix)
+        begin = fdb.tuple.pack(r.start) if r.start else bounds.start
+        tr.get_range(begin, bounds.stop)
+    """
+
+    prefix: tuple
+    start: tuple | None = None
+
+# --------------------------------------------------------------------------
+# Shared constants — both models, both databases
+# --------------------------------------------------------------------------
+
+#: Vote floor for every "top rated" query. 37.6% of the corpus has
+#: ``vote_count == 0``, so an unfiltered rating ranking is noise.
+MIN_VOTE_COUNT = 50
+
+#: How many entries the L2 per-genre leaderboard precomputes (query 6 asks for
+#: the top 20). L2 cannot answer a top-K request larger than this without
+#: falling back to a scan — that limitation is part of the comparison.
+TOP_K = 20
+
+#: Probe parameters for the ten queries. Fixed here so every implementation and
+#: every benchmark run asks the identical question of both databases and both
+#: models — a latency comparison between different questions is meaningless.
+PROBE_YEAR = 2017  # the largest year bucket: 7,871 movies, 56 chunks
+PROBE_LANG = "en"
+PROBE_VOTES = 500
+PROBE_GENRE = 18  # Drama, the most common genre
+PROBE_GENRE_B = 27  # Horror
+REPORT_YEARS = range(2000, 2021)  # the range queries 8 and 10 report over
+
+#: The movie queries 1, 2 and 7 are asked about — the most popular in the
+#: corpus, so it is memorable and unambiguous. Its year and language are given
+#: as constants rather than looked up, so that query 7 measures the same work in
+#: both models (L1 could fetch them in one read; L2 could not).
+PROBE_MOVIE_ID = 419704  # "Ad Astra"
+PROBE_MOVIE_IMDB = "tt2935510"
+PROBE_MOVIE_YEAR = 2019
+PROBE_MOVIE_LANG = "en"
+
+#: Popularity is a float, and a float cannot be negated inside an
+#: order-preserving integer key. Scale to a fixed-point integer instead:
+#: popularity has one decimal digit of real precision, 1000 leaves headroom.
+POPULARITY_SCALE = 1000
+
+#: L2 chunk target. FoundationDB's hard value limit is 100 KB; 90 KB leaves room
+#: for the last record to overshoot the target without crossing the limit.
+CHUNK_TARGET_BYTES = 90_000
+
+#: FoundationDB limits, for the loaders to respect (values are the hard limits).
+FDB_VALUE_LIMIT = 100_000
+FDB_KEY_LIMIT = 10_000
+FDB_TXN_BYTE_LIMIT = 10_000_000
+#: Pairs per write transaction. Well under the 10 MB / 5 s transaction budget
+#: for L1, whose largest value is 2,021 bytes; retry on ``transaction_too_old``.
+FDB_BATCH_SIZE = 1_000
+
+#: Bytes per write transaction. A count-only limit is not enough for L2: its
+#: chunks average 85 KB, so 1,000 of them would be an 85 MB transaction against
+#: a 10 MB limit. 4 MB leaves room for the last chunk plus key overhead and
+#: keeps a transaction comfortably inside the 5 s budget.
+FDB_TXN_TARGET_BYTES = 4_000_000
+
+
+def batched(pairs: Iterable[tuple[bytes, bytes]]) -> Iterator[list[tuple[bytes, bytes]]]:
+    """Group packed ``(key, value)`` pairs into transaction-sized batches.
+
+    Bounded by both :data:`FDB_BATCH_SIZE` and :data:`FDB_TXN_TARGET_BYTES`, so
+    the same call works for L1's 730,414 tiny pairs and L2's 806 large ones.
+    """
+    batch: list[tuple[bytes, bytes]] = []
+    size = 0
+    for key, value in pairs:
+        if batch and (
+            len(batch) >= FDB_BATCH_SIZE or size + len(key) + len(value) > FDB_TXN_TARGET_BYTES
+        ):
+            yield batch
+            batch, size = [], 0
+        batch.append((key, value))
+        size += len(key) + len(value)
+    if batch:
+        yield batch
+
+
+def scaled_popularity(popularity: float) -> int:
+    """Descending-popularity sort component for an ordered key.
+
+    FoundationDB sorts tuple-packed keys ascending, so storing the *negated*
+    scaled popularity makes a plain forward range read return the most popular
+    first, with no client-side sorting at all.
+    """
+    return -int(round(float(popularity) * POPULARITY_SCALE))
+
+
+# ==========================================================================
+# Model L1 — fine-grained: one movie per key, five secondary indexes
+# ==========================================================================
+
+# FoundationDB key families. Index entries carry an empty value; the key itself
+# is the whole payload, which is the idiomatic FDB index and keeps the index
+# subspace small enough to stay cached.
+#
+#   ("movie", id)                                  -> encode(record)
+#   ("idx", "imdb",      imdb_id)                  -> pack((id,))
+#   ("idx", "year",      year, id)                 -> b""
+#   ("idx", "lang",      lang, vote_count, id)     -> b""
+#   ("idx", "genre",     genre_id, id)             -> b""
+#   ("idx", "genre_pop", genre_id, -pop*1000, id)  -> b""
+
+L1_MOVIE_PREFIX = ("movie",)
+L1_INDEX_PREFIX = ("idx",)
+
+
+def l1_movie_key(movie_id: int) -> tuple:
+    return ("movie", int(movie_id))
+
+
+def l1_imdb_key(imdb_id: str) -> tuple:
+    return ("idx", "imdb", imdb_id)
+
+
+def l1_year_range(year: int) -> KeyRange:
+    """Every movie of ``year`` — query 3 is one range read."""
+    return KeyRange(("idx", "year", int(year)))
+
+
+def l1_lang_range(lang: str, min_votes: int | None = None) -> KeyRange:
+    """A language, optionally narrowed to a minimum vote count.
+
+    The vote count sits *before* the id in the key, so query 4 (language X with
+    ``vote_count > 500``) is a single range read from ``(…, lang, 501)`` to the
+    end of the language prefix, rather than a scan of the language followed by a
+    client-side filter. For English that is ~2,600 keys read instead of 58,015.
+    """
+    prefix = ("idx", "lang", lang)
+    if min_votes is None:
+        return KeyRange(prefix)
+    return KeyRange(prefix, prefix + (int(min_votes),))
+
+
+def l1_genre_range(genre_id: int) -> KeyRange:
+    return KeyRange(("idx", "genre", int(genre_id)))
+
+
+def l1_genre_pop_range(genre_id: int) -> KeyRange:
+    """A genre ordered by descending popularity — query 6 reads the first 20
+    keys of this range and then fetches 20 movie records."""
+    return KeyRange(("idx", "genre_pop", int(genre_id)))
+
+
+def l1_index_entries(record: dict) -> Iterator[tuple[tuple, tuple]]:
+    """Every index entry a single movie contributes, as ``(key, value)``.
+
+    Both halves are tuples for the FoundationDB tuple layer to pack. Four of the
+    five families are pure index keys and carry an empty value — the key *is*
+    the payload. The IMDb family is different: it is a mapping to a primary key,
+    so its value is ``(id,)``. Emitting the value here rather than leaving it to
+    each loader is deliberate; writing ``b""`` for every family looks right and
+    silently breaks only query 2.
+
+    Loaders write these alongside the movie record in the same transaction, so a
+    restart never leaves an index entry without its record or vice versa.
+    """
+    movie_id = record["id"]
+
+    if record.get("id_imdb"):
+        yield ("idx", "imdb", record["id_imdb"]), (movie_id,)
+
+    # 5,442 records have no derivable year and get no year index entry. They are
+    # still reachable by id, genre and language, and are still in L2's bucket 0.
+    if "year" in record:
+        yield ("idx", "year", record["year"], movie_id), ()
+
+    if record.get("original_language"):
+        yield ("idx", "lang", record["original_language"], record["vote_count"], movie_id), ()
+
+    pop = scaled_popularity(record["popularity"])
+    for genre_id in record["genre_ids"]:
+        yield ("idx", "genre", genre_id, movie_id), ()
+        yield ("idx", "genre_pop", genre_id, pop, movie_id), ()
+
+
+def l1_index_keys(record: dict) -> Iterator[tuple]:
+    """Just the keys, for counting and for the Oracle side, which has no values."""
+    for key, _ in l1_index_entries(record):
+        yield key
+
+
+# Oracle NoSQL gets the same model through a single table plus native secondary
+# indexes. The document stays in one JSON column rather than being flattened
+# into typed columns, so the stored bytes match FoundationDB's values and the
+# footprint comparison is about the storage engine, not about column encoding.
+
+ORACLE_L1_TABLE = "l1_movies"
+
+ORACLE_L1_DDL = (
+    f"""CREATE TABLE IF NOT EXISTS {ORACLE_L1_TABLE} (
+          id INTEGER,
+          doc JSON,
+          PRIMARY KEY(id)
+        )""",
+)
+
+# One index per FoundationDB index family, same column order, so the two
+# databases are asked to do the same work.
+ORACLE_L1_INDEX_DDL = (
+    f"CREATE INDEX IF NOT EXISTS idx_imdb ON {ORACLE_L1_TABLE}(doc.id_imdb AS STRING)",
+    f"CREATE INDEX IF NOT EXISTS idx_year ON {ORACLE_L1_TABLE}(doc.year AS INTEGER)",
+    f"""CREATE INDEX IF NOT EXISTS idx_lang_votes ON {ORACLE_L1_TABLE}(
+          doc.original_language AS STRING, doc.vote_count AS INTEGER)""",
+    f"CREATE INDEX IF NOT EXISTS idx_genre ON {ORACLE_L1_TABLE}(doc.genre_ids[] AS INTEGER)",
+    # At most one array path per index; the scalar popularity may follow it.
+    f"""CREATE INDEX IF NOT EXISTS idx_genre_pop ON {ORACLE_L1_TABLE}(
+          doc.genre_ids[] AS INTEGER, doc.popularity AS DOUBLE)""",
+)
+
+
+# ==========================================================================
+# Model L2 — coarse-grained: per-year chunks plus precomputed aggregates
+# ==========================================================================
+
+# FoundationDB key families:
+#
+#   ("year",  year, chunk_no)               -> JSON array of ~90 KB of records
+#   ("stats", "genre_year", genre, year)    -> encode(genre-year aggregate)
+#   ("stats", "lang", lang)                 -> encode(language aggregate)
+#   ("stats", "year", year)                 -> encode(year aggregate)
+#   ("top",   "genre", genre, position)     -> encode(record)   position 0..19
+#
+# Note what is *absent*: there is no key from a movie id, an IMDb id or a genre
+# to an individual movie. That is the point of the model, not an oversight — it
+# is what forces queries 1, 2 and 5 into a full scan under L2 and makes the
+# L1/L2 delta measurable in both directions.
+
+L2_YEAR_PREFIX = ("year",)
+L2_STATS_PREFIX = ("stats",)
+L2_TOP_PREFIX = ("top",)
+
+
+def l2_chunk_key(year: int, chunk_no: int) -> tuple:
+    return ("year", int(year), int(chunk_no))
+
+
+def l2_year_range(year: int) -> KeyRange:
+    """An entire year bucket — query 3 and query 7 read whole buckets."""
+    return KeyRange(("year", int(year)))
+
+
+def l2_lang_range() -> KeyRange:
+    """All language stats — query 9 is one range read of 137 keys."""
+    return KeyRange(("stats", "lang"))
+
+
+def l2_year_stats_range() -> KeyRange:
+    """All year stats — query 10 is one range read of 49 keys."""
+    return KeyRange(("stats", "year"))
+
+
+def l2_genre_top_range(genre_id: int) -> KeyRange:
+    """A genre's precomputed leaderboard, already in rank order."""
+    return KeyRange(("top", "genre", int(genre_id)))
+
+
+def l2_genre_year_key(genre_id: int, year: int) -> tuple:
+    return ("stats", "genre_year", int(genre_id), int(year))
+
+
+def l2_lang_key(lang: str) -> tuple:
+    return ("stats", "lang", lang)
+
+
+def l2_year_stats_key(year: int) -> tuple:
+    return ("stats", "year", int(year))
+
+
+def l2_genre_top_key(genre_id: int, position: int) -> tuple:
+    return ("top", "genre", int(genre_id), int(position))
+
+
+def year_bucket(record: dict) -> int:
+    """L2 bucket for a record. Undated movies collect under year 0."""
+    return record.get("year", YEAR_UNKNOWN)
+
+
+def chunk_records(records: Iterable[dict]) -> Iterator[tuple[int, list[dict], bytes]]:
+    """Pack one year's records into ``(chunk_no, records, value)`` triples.
+
+    Greedy fill to :data:`CHUNK_TARGET_BYTES`, sorted by id. Both are needed for
+    determinism: sorting removes any dependence on the order the loader happened
+    to read the 21 files in, and a deterministic packing means both databases
+    store identical chunk boundaries and identical bytes. Without that, the
+    Phase 4 chunk-read latencies would not be comparable.
+
+    A record always lands in a chunk even if it alone exceeds the target — the
+    largest single record is 2,021 bytes, so this never approaches the 100 KB
+    value limit, but the loader should not silently drop data if that changes.
+    """
+    blobs = [(r, encode(r)) for r in sorted(records, key=lambda r: r["id"])]
+
+    chunk_no = 0
+    batch: list[dict] = []
+    parts: list[bytes] = []
+    size = 2  # the enclosing "[" and "]"
+
+    for record, blob in blobs:
+        added = len(blob) + (1 if parts else 0)  # +1 for the separating comma
+        if parts and size + added > CHUNK_TARGET_BYTES:
+            yield chunk_no, batch, b"[" + b",".join(parts) + b"]"
+            chunk_no += 1
+            batch, parts, size = [], [], 2
+            added = len(blob)
+        batch.append(record)
+        parts.append(blob)
+        size += added
+
+    if parts:
+        yield chunk_no, batch, b"[" + b",".join(parts) + b"]"
+
+
+# The aggregates below are the *definition* of the L2 stats values. Both
+# sub-teams call these, and the Phase 3 L1 implementations must reproduce the
+# same numbers by full scan — that equality is the correctness check for the
+# whole L1-vs-L2 comparison.
+
+
+def _mean(total: float, n: int) -> float:
+    """Full precision, deliberately unrounded.
+
+    Rounding here looked harmless and was not: an L1 query rounds the raw mean
+    once, while an L2 query would round an already-rounded stored value a second
+    time. Measured on the real data, that double rounding moved 3 of 399
+    genre-year averages in the 4th decimal — enough for L1 and L2 to return
+    provably different answers to the same question. Round once, at the point of
+    display.
+    """
+    return total / n if n else 0.0
+
+
+def aggregate(records: Iterable[dict]) -> dict[str, dict]:
+    """Compute every L2 aggregate in one pass over the corpus.
+
+    Returns ``{"genre_year": {...}, "lang": {...}, "year": {...},
+    "genre_top": {...}}``, keyed by the tuple/scalar that identifies each row.
+
+    Semantics, fixed here so neither sub-team improvises:
+
+    - ``genre_year`` — a movie counts once per genre it lists, so the genre
+      counts sum to more than 109,222. No vote floor (query 8 asks for the
+      plain average).
+    - ``lang`` — every movie counts exactly once.
+    - ``year`` — ``n_movies``/``avg_popularity`` cover every movie in the
+      bucket; ``n_rated``/``avg_vote_rated`` cover only those with
+      ``vote_count >= MIN_VOTE_COUNT`` (query 10).
+    - ``genre_top`` — top :data:`TOP_K` by popularity, ties broken by ascending
+      id so the leaderboard is deterministic.
+    """
+    genre_year: dict[tuple[int, int], dict] = {}
+    lang: dict[str, dict] = {}
+    year: dict[int, dict] = {}
+    genre_pool: dict[int, list[dict]] = {}
+
+    for record in records:
+        y = year_bucket(record)
+        pop = record["popularity"]
+        vote = record["vote_average"]
+        votes = record["vote_count"]
+
+        for genre_id in record["genre_ids"]:
+            row = genre_year.setdefault(
+                (genre_id, y),
+                {"n_movies": 0, "sum_vote": 0.0, "sum_popularity": 0.0, "sum_votes": 0},
+            )
+            row["n_movies"] += 1
+            row["sum_vote"] += vote
+            row["sum_popularity"] += pop
+            row["sum_votes"] += votes
+            genre_pool.setdefault(genre_id, []).append(record)
+
+        code = record.get("original_language", "")
+        row = lang.setdefault(code, {"n_movies": 0, "sum_popularity": 0.0})
+        row["n_movies"] += 1
+        row["sum_popularity"] += pop
+
+        row = year.setdefault(
+            y,
+            {"n_movies": 0, "sum_popularity": 0.0, "n_rated": 0, "sum_vote_rated": 0.0},
+        )
+        row["n_movies"] += 1
+        row["sum_popularity"] += pop
+        if votes >= MIN_VOTE_COUNT:
+            row["n_rated"] += 1
+            row["sum_vote_rated"] += vote
+
+    for row in genre_year.values():
+        row["avg_vote"] = _mean(row["sum_vote"], row["n_movies"])
+        row["avg_popularity"] = _mean(row["sum_popularity"], row["n_movies"])
+    for row in lang.values():
+        row["avg_popularity"] = _mean(row["sum_popularity"], row["n_movies"])
+    for row in year.values():
+        row["avg_popularity"] = _mean(row["sum_popularity"], row["n_movies"])
+        row["avg_vote_rated"] = _mean(row["sum_vote_rated"], row["n_rated"])
+
+    genre_top = {
+        genre_id: sorted(pool, key=lambda r: (-r["popularity"], r["id"]))[:TOP_K]
+        for genre_id, pool in genre_pool.items()
+    }
+
+    return {
+        "genre_year": genre_year,
+        "lang": lang,
+        "year": year,
+        "genre_top": genre_top,
+    }
+
+
+# Oracle NoSQL gets one table per L2 key family. The chunk and leaderboard
+# tables use a composite primary key with a shard component, which is the
+# closest equivalent to FoundationDB's ordered composite key: rows sharing a
+# year (or a genre) land in the same shard and are read together.
+#
+# Column names avoid SQL keywords — hence `n_movies` rather than `count` and
+# `pos` rather than `rank`.
+
+ORACLE_L2_TABLES = (
+    "l2_movies_by_year",
+    "l2_genre_year_stats",
+    "l2_lang_stats",
+    "l2_year_stats",
+    "l2_genre_top",
+)
+
+ORACLE_L2_DDL = (
+    """CREATE TABLE IF NOT EXISTS l2_movies_by_year (
+         year INTEGER,
+         chunk INTEGER,
+         n_movies INTEGER,
+         movies JSON,
+         PRIMARY KEY(SHARD(year), chunk)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_genre_year_stats (
+         genre_id INTEGER,
+         year INTEGER,
+         n_movies INTEGER,
+         sum_vote DOUBLE,
+         avg_vote DOUBLE,
+         sum_popularity DOUBLE,
+         avg_popularity DOUBLE,
+         sum_votes LONG,
+         PRIMARY KEY(SHARD(genre_id), year)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_lang_stats (
+         lang STRING,
+         n_movies INTEGER,
+         sum_popularity DOUBLE,
+         avg_popularity DOUBLE,
+         PRIMARY KEY(lang)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_year_stats (
+         year INTEGER,
+         n_movies INTEGER,
+         sum_popularity DOUBLE,
+         avg_popularity DOUBLE,
+         n_rated INTEGER,
+         sum_vote_rated DOUBLE,
+         avg_vote_rated DOUBLE,
+         PRIMARY KEY(year)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_genre_top (
+         genre_id INTEGER,
+         pos INTEGER,
+         doc JSON,
+         PRIMARY KEY(SHARD(genre_id), pos)
+       )""",
+)
+
+# L2 has no secondary indexes on purpose. Adding one would quietly turn it back
+# into L1 and erase the contrast the whole comparison rests on.
+ORACLE_L2_INDEX_DDL: tuple[str, ...] = ()
