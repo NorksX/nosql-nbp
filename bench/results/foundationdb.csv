@@ -1,0 +1,21 @@
+database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
+foundationdb,q1,simple,Point lookup by TMDB id,L1,False,200,0.162,0.357,0.498,0.209,0.13
+foundationdb,q1,simple,Point lookup by TMDB id,L2,True,3,300.276,314.429,314.429,303.939,297.112
+foundationdb,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,0.158,0.301,0.471,0.186,0.124
+foundationdb,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,310.113,327.24,327.24,314.526,306.225
+foundationdb,q3,simple,All movies of year 2017,L1,False,50,26.797,29.321,37.134,27.318,24.883
+foundationdb,q3,simple,All movies of year 2017,L2,False,50,24.068,27.937,31.237,24.579,21.95
+foundationdb,q4,simple,Language 'en' with vote_count > 500,L1,False,50,3.316,5.207,6.494,3.527,3.033
+foundationdb,q4,simple,Language 'en' with vote_count > 500,L2,True,3,344.932,347.391,347.391,342.941,336.5
+foundationdb,q5,complex,Movies in both Drama and Horror,L1,False,20,160.927,175.82,175.82,161.625,154.705
+foundationdb,q5,complex,Movies in both Drama and Horror,L2,True,3,353.857,380.038,380.038,362.215,352.751
+foundationdb,q6,complex,Top 20 of Drama by popularity,L1,False,50,0.744,1.005,1.881,0.788,0.623
+foundationdb,q6,complex,Top 20 of Drama by popularity,L2,False,50,0.419,0.512,1.456,0.44,0.364
+foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,332.778,344.18,344.18,335.531,329.636
+foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L2,False,20,54.452,65.026,65.026,54.909,49.305
+foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,832.394,843.744,843.744,824.218,796.516
+foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,3.862,4.309,4.309,3.96,3.756
+foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,774.741,797.566,797.566,780.982,770.639
+foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,1.328,1.357,1.357,1.322,1.291
+foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,778.825,788.574,788.574,779.451,770.953
+foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,0.632,0.709,0.709,0.643,0.608

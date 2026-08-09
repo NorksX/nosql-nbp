@@ -245,6 +245,12 @@ Queries 1, 2, 4 and 5 favour L1; queries 3, 6, 7, 8, 9 and 10 favour L2. That
 split is intentional — a schema pair where one model wins everything would prove
 nothing.
 
+> **These predictions have now been measured.** 18 of the 20 held; both misses
+> are on Oracle NoSQL, where server-side filtering makes L1's non-indexed
+> fallback much cheaper than a round-trip count suggests. Results, and the
+> prediction that turned out to be flatly wrong, are in
+> **[docs/schema-comparison.md](../docs/schema-comparison.md)**.
+
 **Query 7 is a deliberate weak spot in L1.** It needs language *and* a year
 range, and L1 has no composite `(lang, year)` index — only `(lang, vote_count)`
 and `(year)`. Either index alone is unselective: filtering by `en` reads 58,015
@@ -267,7 +273,11 @@ report:**
 
 - Queries 8–10 under L1 are a client-side scan in FoundationDB, which has no
   server-side aggregation at all, but a server-side `GROUP BY` in Oracle NoSQL.
-  This should be the largest single gap in the whole benchmark.
+  This should be the largest single gap in the whole benchmark. — **Measured:
+  wrong.** FoundationDB's client-side scan won two of the three aggregates.
+  The largest gap turned out to be query 6 (1,177×), and it favours
+  FoundationDB's ordered key. See
+  [docs/schema-comparison.md §5.3](../docs/schema-comparison.md).
 - Query 6 under L1 needs a descending scan of `idx_genre_pop`. FoundationDB gets
   it for free from the negated key; Oracle NoSQL must satisfy
   `ORDER BY ... DESC` from the index. Confirm the query plan actually uses the
