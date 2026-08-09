@@ -1,0 +1,57 @@
+# FoundationDB — single fdbserver process + client container
+#
+# NOTE: do NOT add a `platform:` key. foundationdb/foundationdb:7.3.79 is a
+# multi-arch image (linux/amd64 + linux/arm64); Docker selects the native
+# architecture automatically.
+#
+# NETWORKING: the cluster file records the address the server advertises. With
+# FDB_NETWORKING_MODE=container that is the container's internal IP, so a client
+# on the *host* cannot use it even though 4500 is published. The Linux
+# workaround (network_mode: host) does not work on Docker Desktop for Mac, so
+# ALL database access goes through the `client` service on this network.
+# Port 4500 is published only for diagnostics.
+#
+# The cluster file is shared via the `fdbconf` volume, mounted at
+# /etc/foundationdb in both containers: the server writes it on startup, the
+# client reads the very same file.
+
+services:
+  fdb:
+    image: foundationdb/foundationdb:7.3.79
+    container_name: fdb
+    hostname: fdb
+    environment:
+      FDB_NETWORKING_MODE: container
+      FDB_COORDINATOR: fdb
+      FDB_CLUSTER_FILE: /etc/foundationdb/fdb.cluster
+    ports:
+      - "4500:4500"
+    volumes:
+      - fdbdata:/var/fdb/data
+      - fdbconf:/etc/foundationdb
+    networks: [fdbnet]
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: fdb-client
+    depends_on:
+      fdb:
+        condition: service_started
+    environment:
+      FDB_CLUSTER_FILE: /etc/foundationdb/fdb.cluster
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../../:/work
+      - fdbconf:/etc/foundationdb:ro
+    working_dir: /work
+    networks: [fdbnet]
+    command: sleep infinity
+
+volumes:
+  fdbdata:
+  fdbconf:
+
+networks:
+  fdbnet:

@@ -1,0 +1,11 @@
+# Client environment for Oracle NoSQL Database CE.
+# borneo is the Oracle NoSQL Python SDK; it speaks HTTP to the proxy on 8080,
+# which avoids the kvlite hostname-advertisement problem entirely.
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+    borneo==5.4.3 \
+    orjson \
+    tqdm
+
+WORKDIR /work

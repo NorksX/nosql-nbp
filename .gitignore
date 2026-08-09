@@ -29,6 +29,9 @@ htmlcov/
 # Downloaded datasets
 data/
 
+# borneo (Oracle NoSQL SDK) writes ./logs/driver.log from the client container
+logs/
+
 # Notebooks
 .ipynb_checkpoints/
 

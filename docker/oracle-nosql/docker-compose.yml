@@ -1,0 +1,51 @@
+# Oracle NoSQL Database CE — single-node kvlite + HTTP proxy
+#
+# NOTE: do NOT add a `platform:` key. ghcr.io/oracle/nosql:2025-12-ce is a
+# multi-arch image (linux/amd64 + linux/arm64); Docker selects the native
+# architecture automatically. Forcing a platform would run the JVM under
+# emulation and make Phase 4 benchmark numbers meaningless.
+
+services:
+  kvlite:
+    image: ghcr.io/oracle/nosql:2025-12-ce
+    container_name: kvlite
+    hostname: kvlite
+    ports:
+      - "5000:5000" # KV_PORT       — store service
+      - "8080:8080" # KV_PROXY_PORT — HTTP proxy; this is what borneo talks to
+      - "5999:5999" # KV_ADMIN_PORT — admin
+    volumes:
+      - kvroot:/kvroot
+    networks: [kvnet]
+    healthcheck:
+      # the proxy's data endpoint answers 200 once it is serving; "/" and
+      # "/ping" both return 400, so they are useless as probes
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/V2/nosql/data || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: kv-client
+    depends_on:
+      kvlite:
+        condition: service_started
+    environment:
+      # from inside the compose network the proxy is reachable by service name
+      NOSQL_ENDPOINT: http://kvlite:8080
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../../:/work
+    working_dir: /work
+    networks: [kvnet]
+    command: sleep infinity
+
+volumes:
+  kvroot:
+
+networks:
+  kvnet:

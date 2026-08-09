@@ -1,0 +1,19 @@
+# Client environment for FoundationDB.
+#
+# The Python binding is pure Python and loads libfdb_c.so via ctypes, so the
+# shared library must come from a server image of the SAME version and arch.
+# Lifting it out of the official image with a multi-stage COPY guarantees both.
+FROM foundationdb/foundationdb:7.3.79 AS fdbsrc
+
+FROM python:3.11-slim
+
+COPY --from=fdbsrc /usr/lib/libfdb_c.so /usr/lib/libfdb_c.so
+COPY --from=fdbsrc /usr/bin/fdbcli /usr/bin/fdbcli
+
+# client version must match the server image tag exactly
+RUN pip install --no-cache-dir \
+    foundationdb==7.3.79 \
+    orjson \
+    tqdm
+
+WORKDIR /work
