@@ -1,0 +1,21 @@
+database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
+postgresql,q1,simple,Point lookup by TMDB id,L1,False,200,0.061,0.072,0.082,0.062,0.051
+postgresql,q1,simple,Point lookup by TMDB id,L2,True,3,76.5,77.671,77.671,76.147,74.271
+postgresql,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,0.06,0.065,0.068,0.059,0.046
+postgresql,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,67.893,68.064,68.064,67.926,67.823
+postgresql,q3,simple,All movies of year 2017,L1,False,50,0.501,0.519,0.534,0.503,0.49
+postgresql,q3,simple,All movies of year 2017,L2,False,50,0.064,0.073,0.08,0.065,0.05
+postgresql,q4,simple,Language 'en' with vote_count > 500,L1,False,50,0.622,0.648,0.673,0.625,0.611
+postgresql,q4,simple,Language 'en' with vote_count > 500,L2,True,3,79.785,81.254,81.254,79.936,78.768
+postgresql,q5,complex,Movies in both Drama and Horror,L1,False,20,0.988,1.1,1.1,1.007,0.966
+postgresql,q5,complex,Movies in both Drama and Horror,L2,True,3,83.703,84.416,84.416,83.287,81.743
+postgresql,q6,complex,Top 20 of Drama by popularity,L1,False,50,0.105,0.121,0.125,0.107,0.09
+postgresql,q6,complex,Top 20 of Drama by popularity,L2,False,50,0.067,0.073,0.078,0.068,0.059
+postgresql,q7,complex,"Same language, +/-1 year of Ad Astra",L1,False,20,2.34,2.898,2.898,2.374,2.134
+postgresql,q7,complex,"Same language, +/-1 year of Ad Astra",L2,False,20,11.627,34.092,34.092,12.821,11.446
+postgresql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,42.593,42.837,42.837,42.409,41.798
+postgresql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,0.273,0.312,0.312,0.272,0.242
+postgresql,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,18.583,18.878,18.878,18.667,18.54
+postgresql,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,0.116,0.158,0.158,0.124,0.107
+postgresql,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,25.353,25.636,25.636,25.165,24.506
+postgresql,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,0.087,0.143,0.143,0.096,0.074

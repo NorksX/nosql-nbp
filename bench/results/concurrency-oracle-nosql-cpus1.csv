@@ -1,7 +1,13 @@
 database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
-oracle-nosql,q1,L1,Point lookup by TMDB id,1,8.0,6943,867.9,1.052,1.732,2.615,1.152
-oracle-nosql,q1,L1,Point lookup by TMDB id,4,8.0,7279,909.9,2.99,7.076,33.33,4.395
-oracle-nosql,q1,L1,Point lookup by TMDB id,16,8.0,5072,634.0,7.622,85.225,91.516,25.239
-oracle-nosql,q8,L2,Avg rating & count per genre per year,1,8.0,670,83.8,11.537,13.864,16.14,11.948
-oracle-nosql,q8,L2,Avg rating & count per genre per year,4,8.0,1238,154.8,15.712,68.785,98.445,25.937
-oracle-nosql,q8,L2,Avg rating & count per genre per year,16,8.0,265,33.1,494.364,703.781,870.488,491.362
+oracle-nosql,q1,L1,Point lookup by TMDB id,1,8.0,13115,1639.4,0.587,0.728,1.035,0.61
+oracle-nosql,q1,L1,Point lookup by TMDB id,4,8.0,24398,3049.8,1.159,1.873,3.088,1.311
+oracle-nosql,q1,L1,Point lookup by TMDB id,16,8.0,26743,3342.9,2.792,9.885,44.103,4.786
+oracle-nosql,q3,L2,All movies of year 2017,1,8.0,256,32.0,30.854,37.217,40.222,31.3
+oracle-nosql,q3,L2,All movies of year 2017,4,8.0,216,27.0,117.331,209.565,300.221,149.324
+oracle-nosql,q3,L2,All movies of year 2017,16,8.0,132,16.5,992.325,1702.486,1802.379,997.65
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,1,8.0,4561,570.1,1.582,2.647,3.685,1.754
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,4,8.0,4269,533.6,2.579,65.068,71.288,7.496
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,16,8.0,1828,228.5,91.415,107.273,188.615,70.654
+oracle-nosql,q8,L2,Avg rating & count per genre per year,1,8.0,1136,142.0,6.824,8.287,10.738,7.044
+oracle-nosql,q8,L2,Avg rating & count per genre per year,4,8.0,1549,193.6,17.959,36.345,47.999,20.67
+oracle-nosql,q8,L2,Avg rating & count per genre per year,16,8.0,1238,154.8,100.72,174.597,186.727,103.611

@@ -16,10 +16,17 @@ Both models hold the *same* 109,222 records, byte-for-byte identical values from
 ``common.dataset.encode``. The only thing that differs is how they are keyed and
 grouped, which is what makes the Phase 4 numbers attributable to the schema.
 
+Three databases implement these two models: Oracle NoSQL Database CE and
+FoundationDB (the two key-value stores the topic asks for) and PostgreSQL (the
+relational control, added so the project can say what a relational engine costs
+on the same data and the same questions, rather than assuming it).
+
 FoundationDB keys are given here as Python tuples. The FDB loaders pack them
 with ``fdb.tuple.pack`` / ``fdb.Subspace``; this module deliberately does not
-import ``fdb``, because the Oracle client container does not have it installed.
-Oracle NoSQL gets the equivalent shape as DDL, further down.
+import ``fdb``, because neither the Oracle nor the PostgreSQL client container
+has it installed. Oracle NoSQL and PostgreSQL get the equivalent shape as DDL,
+further down — and the places where the relational engine *cannot* express a
+key family are marked there, because those are results.
 
 Everything measured (key counts, chunk counts, byte sizes) is verified against
 the real data by ``common/verify_schemas.py``.
@@ -257,6 +264,63 @@ ORACLE_L1_INDEX_DDL = (
     # At most one array path per index; the scalar popularity may follow it.
     f"""CREATE INDEX IF NOT EXISTS idx_genre_pop ON {ORACLE_L1_TABLE}(
           doc.genre_ids[] AS INTEGER, doc.popularity AS DOUBLE)""",
+)
+
+
+# PostgreSQL — the relational control. Same one-table-plus-five-index-families
+# shape as Oracle NoSQL, for the same reason: the document stays whole in one
+# column so the three databases hold the same document and the comparison is
+# about the engine, not about how the record was taken apart.
+#
+# The stored type is JSONB rather than JSON. JSON keeps the exact input text and
+# would give the closest byte-for-byte match to what the two key-value stores
+# hold, but it can be neither indexed by containment nor read without reparsing
+# on every access, which would make PostgreSQL lose on every query for a reason
+# that has nothing to do with being relational. JSONB is the choice a real
+# project would make, so it is the one measured here — and the difference it
+# makes to the footprint is itself reported (docs/schema-comparison.md §4.1).
+# The normalization in common.dataset already sorts keys and removes duplicates,
+# so JSONB's decomposition loses nothing about the document.
+
+POSTGRES_L1_TABLE = "l1_movies"
+
+POSTGRES_L1_DDL = (
+    f"""CREATE TABLE IF NOT EXISTS {POSTGRES_L1_TABLE} (
+          id  INTEGER PRIMARY KEY,
+          doc JSONB NOT NULL
+        )""",
+)
+
+# One index per FoundationDB key family, in the same column order — with one
+# exception that is a finding, not an oversight, and is documented as such.
+#
+# Four of the five translate directly: PostgreSQL indexes an expression, so
+# `(doc ->> 'id_imdb')` and `((doc ->> 'year')::int)` are ordinary B-trees over
+# a JSON path, and the composite (language, vote_count) index gives query 4 the
+# same two-sided range read that the FoundationDB key gives it.
+#
+# The fifth, idx_genre_pop, has no PostgreSQL equivalent. A B-tree cannot be
+# built over "each element of this JSON array, paired with this scalar" — the
+# index would need one entry per (movie, genre) pair, and an expression index
+# produces exactly one entry per row. What PostgreSQL offers instead is a GIN
+# index, which answers "which movies are in genre 18" quickly but stores no
+# order, so query 6 has to sort the matches afterwards. That is the same
+# position Oracle NoSQL ends up in, and the opposite of FoundationDB, where the
+# ordering *is* the key. The consequence is measured in query 6.
+POSTGRES_L1_INDEX_DDL = (
+    f"CREATE INDEX IF NOT EXISTS idx_imdb ON {POSTGRES_L1_TABLE} ((doc ->> 'id_imdb'))",
+    f"CREATE INDEX IF NOT EXISTS idx_year ON {POSTGRES_L1_TABLE} (((doc ->> 'year')::int))",
+    f"""CREATE INDEX IF NOT EXISTS idx_lang_votes ON {POSTGRES_L1_TABLE} (
+          (doc ->> 'original_language'), ((doc ->> 'vote_count')::int))""",
+    # jsonb_path_ops supports only @>, which is the single operator queries 5
+    # and 6 need, and builds a smaller index than the default jsonb_ops.
+    f"""CREATE INDEX IF NOT EXISTS idx_genre ON {POSTGRES_L1_TABLE}
+          USING GIN ((doc -> 'genre_ids') jsonb_path_ops)""",
+    # The closest thing to idx_genre_pop that PostgreSQL can express: popularity
+    # alone, so the planner can at least walk the corpus in popularity order.
+    # It does not combine with idx_genre — see the note above.
+    f"""CREATE INDEX IF NOT EXISTS idx_pop ON {POSTGRES_L1_TABLE}
+          (((doc ->> 'popularity')::float8) DESC, id)""",
 )
 
 
@@ -521,3 +585,68 @@ ORACLE_L2_DDL = (
 # L2 has no secondary indexes on purpose. Adding one would quietly turn it back
 # into L1 and erase the contrast the whole comparison rests on.
 ORACLE_L2_INDEX_DDL: tuple[str, ...] = ()
+
+
+# PostgreSQL L2 — one table per key family again, with the composite primary
+# keys carrying the same column order as the FoundationDB tuples. PostgreSQL has
+# no shard component to declare; a multi-column primary key is a single B-tree,
+# so the rows of one year (or one genre) are already physically adjacent in the
+# index and are read by one range scan. That is a closer match to FoundationDB's
+# ordered keyspace than Oracle NoSQL's PRIMARY KEY(SHARD(year), chunk), which
+# hashes the shard component.
+#
+# Worth stating explicitly for the report: the ~90 KB chunking exists because of
+# FoundationDB's 100 KB value limit. PostgreSQL has no comparable limit — a
+# single field may be up to 1 GB, and TOAST would store and compress a whole
+# year as one value without complaint. The chunking is kept anyway, identical to
+# the byte, because the three databases must hold identical chunks for the
+# Phase 4 numbers to be comparable. The constraint PostgreSQL does not have is
+# therefore visible in the results as a cost it pays for no reason, which is a
+# fair thing to point out in its favour.
+
+POSTGRES_L2_TABLES = ORACLE_L2_TABLES
+
+POSTGRES_L2_DDL = (
+    """CREATE TABLE IF NOT EXISTS l2_movies_by_year (
+         year     INTEGER NOT NULL,
+         chunk    INTEGER NOT NULL,
+         n_movies INTEGER NOT NULL,
+         movies   JSONB   NOT NULL,
+         PRIMARY KEY (year, chunk)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_genre_year_stats (
+         genre_id       INTEGER NOT NULL,
+         year           INTEGER NOT NULL,
+         n_movies       INTEGER NOT NULL,
+         sum_vote       DOUBLE PRECISION NOT NULL,
+         avg_vote       DOUBLE PRECISION NOT NULL,
+         sum_popularity DOUBLE PRECISION NOT NULL,
+         avg_popularity DOUBLE PRECISION NOT NULL,
+         sum_votes      BIGINT NOT NULL,
+         PRIMARY KEY (genre_id, year)
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_lang_stats (
+         lang           TEXT PRIMARY KEY,
+         n_movies       INTEGER NOT NULL,
+         sum_popularity DOUBLE PRECISION NOT NULL,
+         avg_popularity DOUBLE PRECISION NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_year_stats (
+         year           INTEGER PRIMARY KEY,
+         n_movies       INTEGER NOT NULL,
+         sum_popularity DOUBLE PRECISION NOT NULL,
+         avg_popularity DOUBLE PRECISION NOT NULL,
+         n_rated        INTEGER NOT NULL,
+         sum_vote_rated DOUBLE PRECISION NOT NULL,
+         avg_vote_rated DOUBLE PRECISION NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS l2_genre_top (
+         genre_id INTEGER NOT NULL,
+         pos      INTEGER NOT NULL,
+         doc      JSONB   NOT NULL,
+         PRIMARY KEY (genre_id, pos)
+       )""",
+)
+
+# Same rule as Oracle NoSQL: no secondary indexes on L2, deliberately.
+POSTGRES_L2_INDEX_DDL: tuple[str, ...] = ()

@@ -1,13 +1,13 @@
 database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
-oracle-nosql,q1,L1,Point lookup by TMDB id,1,8.0,7108,888.5,1.056,1.58,2.204,1.125
-oracle-nosql,q1,L1,Point lookup by TMDB id,4,8.0,22146,2768.2,1.192,1.848,3.757,1.444
-oracle-nosql,q1,L1,Point lookup by TMDB id,16,8.0,34734,4341.8,2.947,5.533,14.901,3.684
-oracle-nosql,q3,L2,All movies of year 2017,1,8.0,172,21.5,40.128,51.159,421.169,46.577
-oracle-nosql,q3,L2,All movies of year 2017,4,8.0,687,85.9,45.951,53.495,57.257,46.648
-oracle-nosql,q3,L2,All movies of year 2017,16,8.0,1194,149.2,104.737,138.168,160.698,107.759
-oracle-nosql,q6,L2,Top 20 of Drama by popularity,1,8.0,2576,322.0,2.91,4.383,5.432,3.105
-oracle-nosql,q6,L2,Top 20 of Drama by popularity,4,8.0,8445,1055.6,3.648,5.138,6.298,3.789
-oracle-nosql,q6,L2,Top 20 of Drama by popularity,16,8.0,11783,1472.9,8.684,14.362,104.021,10.866
-oracle-nosql,q8,L2,Avg rating & count per genre per year,1,8.0,575,71.9,12.103,14.043,109.296,13.917
-oracle-nosql,q8,L2,Avg rating & count per genre per year,4,8.0,2000,250.0,15.643,19.897,22.78,16.006
-oracle-nosql,q8,L2,Avg rating & count per genre per year,16,8.0,1066,133.2,120.479,166.906,188.045,120.559
+oracle-nosql,q1,L1,Point lookup by TMDB id,1,8.0,15012,1876.5,0.515,0.6,0.88,0.533
+oracle-nosql,q1,L1,Point lookup by TMDB id,4,8.0,43675,5459.4,0.662,1.134,1.522,0.732
+oracle-nosql,q1,L1,Point lookup by TMDB id,16,8.0,54189,6773.6,2.156,4.442,5.815,2.362
+oracle-nosql,q3,L2,All movies of year 2017,1,8.0,344,43.0,23.678,25.415,28.261,23.287
+oracle-nosql,q3,L2,All movies of year 2017,4,8.0,887,110.9,36.562,40.941,43.346,36.158
+oracle-nosql,q3,L2,All movies of year 2017,16,8.0,1155,144.4,107.767,156.418,210.199,111.279
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,1,8.0,5048,631.0,1.51,2.017,2.564,1.584
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,4,8.0,8704,1088.0,3.489,5.158,6.34,3.676
+oracle-nosql,q6,L2,Top 20 of Drama by popularity,16,8.0,12235,1529.4,9.807,17.655,23.8,10.467
+oracle-nosql,q8,L2,Avg rating & count per genre per year,1,8.0,1146,143.2,6.657,8.888,11.01,6.982
+oracle-nosql,q8,L2,Avg rating & count per genre per year,4,8.0,1754,219.2,17.837,25.919,30.2,18.258
+oracle-nosql,q8,L2,Avg rating & count per genre per year,16,8.0,2034,254.2,61.377,90.649,103.557,63.063

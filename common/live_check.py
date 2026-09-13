@@ -7,6 +7,7 @@ schema.md survives contact with a real store.
 
     docker exec kv-client  python -m common.live_check
     docker exec fdb-client python -m common.live_check
+    docker exec pg-client  python -m common.live_check
     docker exec fdb-client python -m common.live_check --model l2 --skip-load
 
 The loader here is deliberately the simplest thing that works — no progress
@@ -26,6 +27,7 @@ import sys
 import time
 
 from common import keyspec as ks
+from common.apply_schema import detect_database
 from common.dataset import encode, iter_movies
 
 # Probe parameters live in keyspec so live_check and the benchmark ask the
@@ -453,17 +455,291 @@ def run_oracle(models: list[str], movies: list[dict], exp: dict, skip_load: bool
         handle.close()
 
 
+# ==========================================================================
+# PostgreSQL
+# ==========================================================================
+
+
+def run_postgres(models: list[str], movies: list[dict], exp: dict, skip_load: bool) -> None:
+    """Load and verify the relational control.
+
+    The loader batches inserts into transactions the same size FoundationDB
+    uses (``keyspec.FDB_BATCH_SIZE``), rather than reaching for ``COPY``.
+    ``COPY`` is PostgreSQL's real bulk-load path and is several times faster,
+    but it has no counterpart in either key-value store, so using it here would
+    make the load-time comparison a comparison of loading strategies. The
+    batched ``INSERT ... ON CONFLICT`` is the honest middle: it is an upsert,
+    like FoundationDB's ``tr[k] = v`` and Oracle NoSQL's ``put``, so the loader
+    is idempotent and restartable in exactly the same sense theirs are.
+
+    Indexes exist before the load, so index maintenance is paid during it — the
+    same arrangement as Oracle NoSQL, and the same as FoundationDB, whose loader
+    writes its index keys in the same transaction as the record.
+    """
+    import json
+
+    import psycopg
+
+    dsn = os.environ["PG_DSN"]
+    log(f"PostgreSQL at {dsn.rsplit('@', 1)[-1]}\n")
+
+    with psycopg.connect(dsn) as conn:
+        version = conn.execute("SHOW server_version").fetchone()[0]
+        log(f"   server_version {version}\n")
+
+        def query(statement: str, params: tuple = ()) -> list[tuple]:
+            with conn.cursor() as cur:
+                cur.execute(statement, params)
+                rows = cur.fetchall()
+            conn.commit()
+            return rows
+
+        def scalar(statement: str, params: tuple = ()):
+            rows = query(statement, params)
+            return rows[0][0] if rows else None
+
+        def insert_batched(statement: str, rows) -> int:
+            """Upsert ``rows`` in transactions of FDB_BATCH_SIZE."""
+            written = 0
+            batch: list[tuple] = []
+            with conn.cursor() as cur:
+                for row in rows:
+                    batch.append(row)
+                    if len(batch) >= ks.FDB_BATCH_SIZE:
+                        cur.executemany(statement, batch)
+                        conn.commit()
+                        written += len(batch)
+                        batch = []
+                if batch:
+                    cur.executemany(statement, batch)
+                    conn.commit()
+                    written += len(batch)
+            return written
+
+        if "l1" in models:
+            log("L1 — load")
+            if not skip_load:
+                rows = ((m["id"], encode(m).decode("utf-8")) for m in movies)
+                written, seconds = timed(
+                    f"inserted {len(movies):,} rows",
+                    insert_batched,
+                    "INSERT INTO l1_movies (id, doc) VALUES (%s, %s::jsonb) "
+                    "ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc",
+                    rows,
+                )
+                log(f"   {written / seconds:,.0f} rows/s "
+                    f"(5 indexes maintained server-side)")
+                check(written == len(movies), f"{len(movies):,} rows written")
+
+            log("L1 — read back")
+            n = scalar("SELECT count(*) FROM l1_movies")
+            check(n == exp["n_total"], "row count", f"{n:,} == {exp['n_total']:,}")
+
+            probe = exp["probe"]
+            doc = scalar("SELECT doc FROM l1_movies WHERE id = %s", (probe["id"],))
+            check(doc is not None and doc.get("title") == probe["title"],
+                  "Q1 point lookup by primary key", probe["title"])
+            # JSONB is a decomposed binary form, so the stored bytes are not the
+            # stored bytes of the other two databases — but the document must
+            # still round-trip identically, or the comparison is not about the
+            # same records. That is what is actually checked here.
+            check(doc == json.loads(encode(probe)),
+                  "JSONB round-trips the record unchanged (keys sorted, no nulls)")
+
+            got = scalar("SELECT id FROM l1_movies WHERE doc ->> 'id_imdb' = %s",
+                         (probe["id_imdb"],))
+            check(got == probe["id"], "Q2 idx_imdb resolves the alternate key",
+                  probe["id_imdb"])
+
+            n = scalar("SELECT count(*) FROM l1_movies WHERE (doc ->> 'year')::int = %s",
+                       (PROBE_YEAR,))
+            check(n == exp["n_year"], f"Q3 year {PROBE_YEAR} via idx_year",
+                  f"{n:,} == {exp['n_year']:,}")
+
+            n = scalar(
+                "SELECT count(*) FROM l1_movies "
+                "WHERE doc ->> 'original_language' = %s "
+                "AND (doc ->> 'vote_count')::int > %s",
+                (PROBE_LANG, PROBE_VOTES),
+            )
+            check(n == exp["n_lang_votes"], "Q4 language + vote floor via idx_lang_votes",
+                  f"{n:,} == {exp['n_lang_votes']:,}")
+
+            n = scalar(
+                "SELECT count(*) FROM l1_movies WHERE doc -> 'genre_ids' @> %s::jsonb",
+                (str(PROBE_GENRE),),
+            )
+            check(n == exp["n_genre"], "Q5 genre membership via GIN idx_genre",
+                  f"{n:,} == {exp['n_genre']:,}")
+
+            n = scalar(
+                "SELECT count(*) FROM l1_movies "
+                "WHERE doc -> 'genre_ids' @> %s::jsonb AND doc -> 'genre_ids' @> %s::jsonb",
+                (str(PROBE_GENRE), str(PROBE_GENRE_B)),
+            )
+            check(n == exp["n_both_genres"], "Q5 two-genre intersection",
+                  f"{n:,} == {exp['n_both_genres']:,}")
+
+            rows = query(
+                "SELECT id FROM l1_movies WHERE doc -> 'genre_ids' @> %s::jsonb "
+                "ORDER BY (doc ->> 'popularity')::float8 DESC, id ASC LIMIT %s",
+                (str(PROBE_GENRE), ks.TOP_K),
+            )
+            got = [r[0] for r in rows]
+            check(got == exp["top_ids"],
+                  f"Q6 top-{ks.TOP_K} — GIN finds the genre, the sort does the order",
+                  f"{len(got)} ids")
+
+            rows = query(
+                "SELECT doc ->> 'original_language', count(*) FROM l1_movies "
+                "GROUP BY 1"
+            )
+            check(len(rows) == len(exp["agg"]["lang"]),
+                  "Q9 server-side GROUP BY (no FoundationDB equivalent)",
+                  f"{len(rows)} languages")
+
+            # The thing neither NoSQL store can do in one statement: group by an
+            # element of the JSON array. Oracle NoSQL needs one query per genre
+            # (19 of them); FoundationDB has no server-side aggregation at all.
+            rows = query(
+                "SELECT g.value::int, count(*) FROM l1_movies, "
+                "LATERAL jsonb_array_elements_text(doc -> 'genre_ids') g GROUP BY 1"
+            )
+            check(len(rows) == len(exp["agg"]["genre_top"]),
+                  "GROUP BY an element of the JSON array, in ONE statement",
+                  f"{len(rows)} genres")
+            log()
+
+        if "l2" in models:
+            log("L2 — load")
+            rows = list(l2_rows(movies, exp["agg"]))
+            if not skip_load:
+                chunk_rows = [
+                    (k[1], k[2], n, v.decode("utf-8")) for k, v, n in rows if k[0] == "year"
+                ]
+                stat_tables = [
+                    (("stats", "genre_year"),
+                     "INSERT INTO l2_genre_year_stats (genre_id, year, n_movies, "
+                     "sum_vote, avg_vote, sum_popularity, avg_popularity, sum_votes) "
+                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                     "ON CONFLICT (genre_id, year) DO UPDATE SET n_movies = EXCLUDED.n_movies",
+                     lambda k, d: (k[2], k[3], d["n_movies"], d["sum_vote"], d["avg_vote"],
+                                   d["sum_popularity"], d["avg_popularity"], d["sum_votes"])),
+                    (("stats", "lang"),
+                     "INSERT INTO l2_lang_stats (lang, n_movies, sum_popularity, "
+                     "avg_popularity) VALUES (%s,%s,%s,%s) "
+                     "ON CONFLICT (lang) DO UPDATE SET n_movies = EXCLUDED.n_movies",
+                     lambda k, d: (k[2], d["n_movies"], d["sum_popularity"],
+                                   d["avg_popularity"])),
+                    (("stats", "year"),
+                     "INSERT INTO l2_year_stats (year, n_movies, sum_popularity, "
+                     "avg_popularity, n_rated, sum_vote_rated, avg_vote_rated) "
+                     "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                     "ON CONFLICT (year) DO UPDATE SET n_movies = EXCLUDED.n_movies",
+                     lambda k, d: (k[2], d["n_movies"], d["sum_popularity"],
+                                   d["avg_popularity"], d["n_rated"],
+                                   d["sum_vote_rated"], d["avg_vote_rated"])),
+                ]
+
+                start = time.perf_counter()
+                written = insert_batched(
+                    "INSERT INTO l2_movies_by_year (year, chunk, n_movies, movies) "
+                    "VALUES (%s,%s,%s,%s::jsonb) "
+                    "ON CONFLICT (year, chunk) DO UPDATE SET movies = EXCLUDED.movies",
+                    chunk_rows,
+                )
+                for family, statement, build in stat_tables:
+                    written += insert_batched(
+                        statement,
+                        (build(k, json.loads(v)) for k, v, _ in rows
+                         if k[: len(family)] == family),
+                    )
+                written += insert_batched(
+                    "INSERT INTO l2_genre_top (genre_id, pos, doc) VALUES (%s,%s,%s::jsonb) "
+                    "ON CONFLICT (genre_id, pos) DO UPDATE SET doc = EXCLUDED.doc",
+                    ((k[2], k[3], v.decode("utf-8")) for k, v, _ in rows
+                     if k[:2] == ("top", "genre")),
+                )
+                seconds = time.perf_counter() - start
+                log(f"   inserted {written:,} rows: {seconds:.1f} s  "
+                    f"({written / seconds:,.0f} rows/s)")
+                check(written == len(rows), f"{len(rows):,} rows written (got {written:,})")
+
+            log("L2 — read back")
+            n = scalar("SELECT count(*) FROM l2_movies_by_year WHERE year = %s",
+                       (PROBE_YEAR,))
+            check(n == exp["n_chunks_year"], f"Q3 year {PROBE_YEAR} chunk count",
+                  f"{n} == {exp['n_chunks_year']}")
+
+            n = scalar("SELECT sum(n_movies) FROM l2_movies_by_year")
+            check(n == exp["n_total"], "every movie is in exactly one chunk",
+                  f"{n:,} == {exp['n_total']:,}")
+
+            # PostgreSQL has no 100 KB value limit, so there is no constraint to
+            # check as there is on FoundationDB. What matters instead is that
+            # the chunk *boundaries* are the identical ones the other two
+            # databases hold — otherwise the three are not reading the same
+            # thing and none of the Phase 4 chunk latencies compare.
+            #
+            # The boundaries are compared, not the byte sizes, because JSONB
+            # does not store the text it was given: it reprints with a space
+            # after every ':' and ',', so the same 89,999-byte chunk measures
+            # several KB larger through `movies::text`. That difference is real
+            # and is reported in the footprint section; it is not a defect.
+            stored = {
+                (year, chunk): n
+                for year, chunk, n in query(
+                    "SELECT year, chunk, n_movies FROM l2_movies_by_year"
+                )
+            }
+            wanted = {(k[1], k[2]): n for k, _, n in rows if k[0] == "year"}
+            check(stored == wanted,
+                  "chunk boundaries are identical to the key-value stores'",
+                  f"{len(stored):,} chunks")
+
+            want = exp["agg"]["genre_year"][(PROBE_GENRE, PROBE_YEAR)]
+            row = query(
+                "SELECT n_movies, avg_vote FROM l2_genre_year_stats "
+                "WHERE genre_id = %s AND year = %s",
+                (PROBE_GENRE, PROBE_YEAR),
+            )
+            check(
+                len(row) == 1
+                and row[0][0] == want["n_movies"]
+                and abs(row[0][1] - want["avg_vote"]) < 1e-6,
+                "Q8 genre-year stat matches the recomputed aggregate",
+                f"n={want['n_movies']}, avg_vote={want['avg_vote']}",
+            )
+
+            n = scalar("SELECT count(*) FROM l2_lang_stats")
+            check(n == len(exp["agg"]["lang"]), "Q9 language stats present",
+                  f"{n} languages")
+
+            n = scalar("SELECT count(*) FROM l2_year_stats")
+            check(n == len(exp["agg"]["year"]), "Q10 year stats present", f"{n} years")
+
+            rows_ = query(
+                "SELECT (doc ->> 'id')::int FROM l2_genre_top WHERE genre_id = %s "
+                "ORDER BY pos",
+                (PROBE_GENRE,),
+            )
+            got = [r[0] for r in rows_]
+            check(got == exp["top_ids"],
+                  f"Q6 precomputed top-{ks.TOP_K} matches L1's ordering")
+            log()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Load the full corpus into L1/L2 and verify every key family."
     )
     parser.add_argument("--model", action="append", choices=("l1", "l2"))
-    parser.add_argument("--db", choices=("oracle", "fdb"))
+    parser.add_argument("--db", choices=("oracle", "fdb", "postgres"))
     parser.add_argument("--skip-load", action="store_true", help="verify without reloading")
     args = parser.parse_args(argv)
 
     models = args.model or ["l1", "l2"]
-    database = args.db or ("oracle" if os.environ.get("NOSQL_ENDPOINT") else "fdb")
+    database = detect_database(args.db)
 
     log("reading data/ ...")
     movies = list(iter_movies())
@@ -471,7 +747,9 @@ def main(argv: list[str] | None = None) -> int:
     log(f"   {len(movies):,} records; probe movie {exp['probe']['id']} "
         f"({exp['probe']['title']!r})\n")
 
-    (run_oracle if database == "oracle" else run_fdb)(models, movies, exp, args.skip_load)
+    {"oracle": run_oracle, "postgres": run_postgres, "fdb": run_fdb}[database](
+        models, movies, exp, args.skip_load
+    )
 
     log(f"{'FAILED: ' + str(len(failures)) + ' check(s)' if failures else 'ALL CHECKS PASSED'}"
         f"   ({time.perf_counter() - _t0:.1f} s total)")

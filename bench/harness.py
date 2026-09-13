@@ -2,6 +2,7 @@
 
     docker exec kv-client  python -m bench.harness
     docker exec fdb-client python -m bench.harness
+    docker exec pg-client  python -m bench.harness
 
 Writes bench/results/<database>.csv and prints a summary. Run it once per
 database; bench/report.py then merges the CSVs into the comparison document.
@@ -24,13 +25,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import statistics
 import sys
 import time
 from pathlib import Path
 
-from bench.queries import FdbBackend, OracleBackend
+from bench.queries import FdbBackend, OracleBackend, PostgresBackend
+from common.apply_schema import detect_database
+
+BACKENDS = {
+    "oracle": OracleBackend,
+    "fdb": FdbBackend,
+    "postgres": PostgresBackend,
+}
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -52,6 +59,37 @@ QUERIES = [
 #: Paths with no index at all read and parse the whole corpus. Cap them harder.
 SCAN_ITERATIONS = 3
 SCAN_WARMUP = 1
+
+#: How slow a first run has to be before the harness suspects there is no index
+#: behind it. Used only as a cross-check now — see DEGRADES_TO_SCAN.
+SLOW_FIRST_RUN_MS = 250
+
+#: Which (database, model, query) combinations have no access path and degrade
+#: to reading the whole corpus. This is the access-path analysis from
+#: common/schema.md §5 written down, per database, rather than inferred from a
+#: stopwatch — a fast machine could otherwise leave a genuine full scan under
+#: the threshold and mark it as indexed, which is exactly what happens to
+#: PostgreSQL's queries 9 and 10 over L1.
+#:
+#: The values for Oracle NoSQL and FoundationDB are the ones their own
+#: measured runs produced, so nothing already reported changes. The harness
+#: still times the first run and prints a warning when the measurement and this
+#: table disagree, which is how a wrong entry here gets caught.
+DEGRADES_TO_SCAN = {
+    # Oracle NoSQL: L1 cannot order by an index (q6) and has no (lang, year)
+    # index (q7); aggregates read the table. L2 has no path from an id.
+    ("oracle-nosql", "L1"): {"q6", "q7", "q8", "q9", "q10"},
+    ("oracle-nosql", "L2"): {"q1", "q2", "q4", "q5", "q7"},
+    # FoundationDB: the ordered key serves q6 directly, so only q7 and the
+    # aggregates scan. Its L2 reads three year buckets for q7 without scanning.
+    ("foundationdb", "L1"): {"q7", "q8", "q9", "q10"},
+    ("foundationdb", "L2"): {"q1", "q2", "q4", "q5"},
+    # PostgreSQL: the planner walks idx_pop backwards for q6 and uses
+    # idx_lang_votes for q7, so neither degrades; the three aggregates still
+    # read every row, whatever the clock says.
+    ("postgresql", "L1"): {"q8", "q9", "q10"},
+    ("postgresql", "L2"): {"q1", "q2", "q4", "q5"},
+}
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -101,14 +139,14 @@ def measure(fn, iterations: int, warmup: int) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark L1 vs L2 on one database.")
-    parser.add_argument("--db", choices=("oracle", "fdb"))
+    parser.add_argument("--db", choices=("oracle", "fdb", "postgres"))
     parser.add_argument("--only", help="comma-separated query ids, e.g. q1,q8")
     parser.add_argument("--tag", help="suffix for the results file, e.g. cpus1 "
                         "writes <database>-cpus1.csv instead of <database>.csv")
     args = parser.parse_args(argv)
 
-    database = args.db or ("oracle" if os.environ.get("NOSQL_ENDPOINT") else "fdb")
-    backend = OracleBackend() if database == "oracle" else FdbBackend()
+    database = detect_database(args.db)
+    backend = BACKENDS[database]()
     wanted = set(args.only.split(",")) if args.only else None
 
     print(f"database: {backend.name}")
@@ -128,9 +166,17 @@ def main(argv: list[str] | None = None) -> int:
             start = time.perf_counter()
             results[model] = backend.run(model, qid)
             elapsed = (time.perf_counter() - start) * 1000
-            # A first run slower than a quarter second means there is no index
-            # behind it; treat it as a scan and cap the iteration count.
-            results[f"{model}_slow"] = elapsed > 250
+            declared = qid in DEGRADES_TO_SCAN.get(
+                (backend.name, model.upper()), frozenset()
+            )
+            # The declaration decides; the clock only gets to object. A first
+            # run is cold, so the two disagree harmlessly at the margin — a
+            # warning is enough, and a persistent one means the access-path
+            # analysis for that database is wrong and should be revisited.
+            if declared != (elapsed > SLOW_FIRST_RUN_MS):
+                print(f"   note: {model.upper()} first run {elapsed:,.0f} ms — "
+                      f"{'declared' if declared else 'not declared'} a full scan")
+            results[f"{model}_slow"] = declared
 
         if not results_match(results["l1"], results["l2"]):
             mismatches.append(qid)

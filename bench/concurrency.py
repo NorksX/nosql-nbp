@@ -2,6 +2,7 @@
 
     docker exec kv-client  python -m bench.concurrency
     docker exec fdb-client python -m bench.concurrency
+    docker exec pg-client  python -m bench.concurrency
 
 Writes bench/results/concurrency-<database>.csv. Workers are separate
 *processes*, not threads — with threads the Python GIL serializes the
@@ -20,7 +21,6 @@ from __future__ import annotations
 import argparse
 import csv
 import multiprocessing as mp
-import os
 import statistics
 import sys
 import time
@@ -28,7 +28,7 @@ from pathlib import Path
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
-#: (query, model) pairs with a real access path on BOTH databases, one per
+#: (query, model) pairs with a real access path on ALL THREE databases, one per
 #: query class: point lookup, range read, leaderboard, precomputed aggregate.
 TARGETS = [
     ("q1", "l1", "Point lookup by TMDB id"),
@@ -50,10 +50,12 @@ def percentile(values: list[float], pct: float) -> float:
 
 def make_backend():
     # Imported lazily so the parent process never initializes a client
-    # library — the FDB network thread must not exist before fork().
-    from bench.queries import FdbBackend, OracleBackend
+    # library — the FDB network thread must not exist before fork(), and a
+    # psycopg connection must never be inherited across one either.
+    from bench.harness import BACKENDS
+    from common.apply_schema import detect_database
 
-    return OracleBackend() if os.environ.get("NOSQL_ENDPOINT") else FdbBackend()
+    return BACKENDS[detect_database()]()
 
 
 def worker(qid: str, model: str, barrier, queue) -> None:
@@ -106,7 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     wanted = set(args.only.split(",")) if args.only else None
 
-    database = "oracle-nosql" if os.environ.get("NOSQL_ENDPOINT") else "foundationdb"
+    # The slug must match the one bench/harness.py writes, so report.py and
+    # plots.py can pair a concurrency CSV with its latency CSV.
+    from bench.harness import BACKENDS
+    from common.apply_schema import detect_database
+
+    database = BACKENDS[detect_database()].name
     print(f"database: {database}")
 
     rows = []

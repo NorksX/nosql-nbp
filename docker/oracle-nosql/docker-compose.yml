@@ -11,7 +11,11 @@ services:
     container_name: kvlite
     hostname: kvlite
     ports:
-      - "5000:5000" # KV_PORT       — store service
+      # 5000 on the host is taken by macOS ControlCenter (AirPlay Receiver),
+      # so the store service is published on 5001 instead. Host ports are for
+      # diagnostics only — every client talks to kvlite:8080 inside kvnet — so
+      # this changes nothing that is measured.
+      - "5001:5000" # KV_PORT       — store service (host 5001, see note above)
       - "8080:8080" # KV_PROXY_PORT — HTTP proxy; this is what borneo talks to
       - "5999:5999" # KV_ADMIN_PORT — admin
     volumes:

@@ -1,0 +1,68 @@
+# PostgreSQL — single-node relational baseline + client container
+#
+# NOTE: do NOT add a `platform:` key. postgres:17.6-bookworm is a multi-arch
+# image (linux/amd64 + linux/arm64); Docker selects the native architecture
+# automatically. Forcing a platform would run the server under emulation and
+# make the Phase 4 benchmark numbers meaningless — the same rule that already
+# applies to the Oracle NoSQL and FoundationDB stacks.
+#
+# NETWORKING: unlike FoundationDB, PostgreSQL advertises nothing about itself —
+# the client connects to a host and a port and that is all. Access from the
+# host on localhost:5433 therefore works. It is nevertheless driven from the
+# `client` service on this network, for the same reason the other two stacks
+# are: all three databases must be measured from an equivalent containerized
+# Python 3.11 client, or the latency comparison measures the client as much as
+# the server. Port 5433 is published only for psql and diagnostics.
+#
+# CONFIGURATION: the server runs with stock defaults (shared_buffers 128 MB,
+# no tuning) because kvlite and fdbserver also run with stock defaults. Tuning
+# only one of the three would be the single easiest way to produce a
+# meaningless comparison.
+
+services:
+  pg:
+    image: postgres:17.6-bookworm
+    container_name: pg
+    hostname: pg
+    environment:
+      POSTGRES_USER: nbp
+      POSTGRES_PASSWORD: nbp
+      POSTGRES_DB: tmdb
+      # the data directory must be a subdirectory of the mount point, or
+      # initdb refuses to run in a non-empty volume (lost+found)
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432" # host 5433 to avoid colliding with a local PostgreSQL
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [pgnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nbp -d tmdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: pg-client
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      # from inside the compose network the server is reachable by service name
+      PG_DSN: postgresql://nbp:nbp@pg:5432/tmdb
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../../:/work
+    working_dir: /work
+    networks: [pgnet]
+    command: sleep infinity
+
+volumes:
+  pgdata:
+
+networks:
+  pgnet:

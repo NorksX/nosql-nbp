@@ -6,13 +6,23 @@ Run from inside a client container, from /work:
     docker compose exec client python -m common.apply_schema --model l1 --model l2
 
 The database is picked from the environment the container already sets —
-``NOSQL_ENDPOINT`` for Oracle NoSQL, ``FDB_CLUSTER_FILE`` for FoundationDB —
-so the same command works in both stacks.
+``NOSQL_ENDPOINT`` for Oracle NoSQL, ``PG_DSN`` for PostgreSQL, and otherwise
+``FDB_CLUSTER_FILE`` for FoundationDB — so the same command works in all three
+stacks.
 
-Oracle NoSQL has real DDL, so this creates the tables and indexes. FoundationDB
-has no schema to declare: the key layout only exists in ``common/keyspec.py``,
-and there this script just reports the prefixes and, with ``--drop``, clears
-them. Dropping is what makes the loaders restartable from a clean state.
+The three behave differently here, and the difference is itself a result worth
+recording in the report:
+
+- **PostgreSQL** has the fullest DDL of the three: typed columns, declared
+  constraints, and index types the planner chooses between. Applying the schema
+  is a transaction, and a failed statement rolls back.
+- **Oracle NoSQL** has real DDL too, but one table request at a time, polled
+  until the store reports the table ready.
+- **FoundationDB** has no schema to declare at all: the key layout exists only
+  in ``common/keyspec.py``, so here this script just reports the prefixes and,
+  with ``--drop``, clears them.
+
+Dropping is what makes the loaders restartable from a clean state.
 """
 
 from __future__ import annotations
@@ -40,6 +50,29 @@ FDB_PREFIXES = {
     "l1": (keyspec.L1_MOVIE_PREFIX, keyspec.L1_INDEX_PREFIX),
     "l2": (keyspec.L2_YEAR_PREFIX, keyspec.L2_STATS_PREFIX, keyspec.L2_TOP_PREFIX),
 }
+POSTGRES_DDL = {
+    "l1": keyspec.POSTGRES_L1_DDL + keyspec.POSTGRES_L1_INDEX_DDL,
+    "l2": keyspec.POSTGRES_L2_DDL + keyspec.POSTGRES_L2_INDEX_DDL,
+}
+POSTGRES_TABLES = {
+    "l1": (keyspec.POSTGRES_L1_TABLE,),
+    "l2": keyspec.POSTGRES_L2_TABLES,
+}
+
+
+def detect_database(override: str | None = None) -> str:
+    """Which database this container is wired to.
+
+    Checked in a fixed order so a container that happens to carry two of the
+    variables still resolves deterministically; ``--db`` overrides it.
+    """
+    if override:
+        return override
+    if os.environ.get("NOSQL_ENDPOINT"):
+        return "oracle"
+    if os.environ.get("PG_DSN"):
+        return "postgres"
+    return "fdb"
 
 
 def _one_line(statement: str) -> str:
@@ -99,6 +132,33 @@ def apply_fdb(models: list[str], drop: bool) -> None:
         print()
 
 
+def apply_postgres(models: list[str], drop: bool) -> None:
+    import psycopg
+
+    dsn = os.environ["PG_DSN"]
+    # Never print the DSN itself — it carries the password.
+    print(f"PostgreSQL at {dsn.rsplit('@', 1)[-1]}\n")
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        version = conn.execute("SHOW server_version").fetchone()[0]
+        print(f"   server_version {version}\n")
+        for model in models:
+            print(f"{model.upper()}:")
+            with conn.cursor() as cur:
+                if drop:
+                    # CASCADE is not needed — nothing references these tables —
+                    # but indexes do go with the table, as in Oracle NoSQL.
+                    for table in POSTGRES_TABLES[model]:
+                        statement = f"DROP TABLE IF EXISTS {table}"
+                        print(f"   {statement}")
+                        cur.execute(statement)
+                else:
+                    for statement in POSTGRES_DDL[model]:
+                        print(f"   {_one_line(statement)}")
+                        cur.execute(statement)
+            print()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Create or drop the L1/L2 schemas in the reachable database."
@@ -111,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--db",
-        choices=("oracle", "fdb"),
+        choices=("oracle", "fdb", "postgres"),
         help="override the database detected from the environment",
     )
     parser.add_argument(
@@ -127,23 +187,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     models = args.model or ["l1", "l2"]
-    database = args.db or ("oracle" if os.environ.get("NOSQL_ENDPOINT") else "fdb")
+    database = detect_database(args.db)
+
+    targets_for = {
+        "oracle": ORACLE_TABLES,
+        "postgres": POSTGRES_TABLES,
+        "fdb": FDB_PREFIXES,
+    }[database]
 
     if args.drop and not args.yes:
         print("--drop would DELETE the following, and all data in it:\n")
         for model in models:
-            targets = (
-                ORACLE_TABLES[model] if database == "oracle" else FDB_PREFIXES[model]
-            )
-            for target in targets:
+            for target in targets_for[model]:
                 print(f"   {model.upper()}  {target!r}")
         print("\nre-run with --yes to actually do it")
         return 1
 
-    if database == "oracle":
-        apply_oracle(models, args.drop)
-    else:
-        apply_fdb(models, args.drop)
+    {"oracle": apply_oracle, "postgres": apply_postgres, "fdb": apply_fdb}[database](
+        models, args.drop
+    )
 
     print("dropped" if args.drop else "applied")
     return 0

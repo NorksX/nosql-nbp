@@ -1,21 +1,21 @@
 database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
-oracle-nosql,q1,simple,Point lookup by TMDB id,L1,False,200,1.095,1.744,2.194,1.182,0.958
-oracle-nosql,q1,simple,Point lookup by TMDB id,L2,True,3,9778.988,10139.831,10139.831,9646.269,9019.989
-oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,1.813,2.756,3.667,1.975,1.51
-oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,9317.372,9842.271,9842.271,9483.907,9292.08
-oracle-nosql,q3,simple,All movies of year 2017,L1,False,50,18.028,22.513,27.354,18.546,14.881
-oracle-nosql,q3,simple,All movies of year 2017,L2,False,50,36.1,46.289,48.319,37.164,31.924
-oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L1,False,50,5.891,6.846,7.129,5.934,5.115
-oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L2,True,3,11821.505,13012.503,13012.503,11799.542,10564.618
-oracle-nosql,q5,complex,Movies in both Drama and Horror,L1,True,3,238.389,238.546,238.546,236.883,233.713
-oracle-nosql,q5,complex,Movies in both Drama and Horror,L2,True,3,11024.774,12416.337,12416.337,11365.424,10655.161
-oracle-nosql,q6,complex,Top 20 of Drama by popularity,L1,True,3,977.734,1024.265,1024.265,989.193,965.579
-oracle-nosql,q6,complex,Top 20 of Drama by popularity,L2,False,50,2.698,3.407,3.691,2.799,2.388
-oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,619.478,1285.596,1285.596,780.974,437.849
-oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L2,True,3,1468.562,1526.287,1526.287,1478.326,1440.128
-oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,1256.156,2202.394,2202.394,1568.62,1247.309
-oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,14.005,16.539,16.539,14.117,11.394
-oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,736.895,772.016,772.016,745.369,727.194
-oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,4.019,4.229,4.229,4.056,3.892
-oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,1348.359,2320.444,2320.444,1669.413,1339.436
-oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,1.774,2.648,2.648,1.953,1.74
+oracle-nosql,q1,simple,Point lookup by TMDB id,L1,False,200,0.533,0.556,0.635,0.539,0.512
+oracle-nosql,q1,simple,Point lookup by TMDB id,L2,True,3,6701.275,6761.791,6761.791,6702.998,6645.928
+oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,0.886,0.952,1.136,0.901,0.818
+oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,6677.495,6777.612,6777.612,6674.272,6567.709
+oracle-nosql,q3,simple,All movies of year 2017,L1,False,50,9.188,9.495,11.145,9.172,8.611
+oracle-nosql,q3,simple,All movies of year 2017,L2,False,50,22.131,23.499,24.376,21.461,18.583
+oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L1,False,50,3.525,3.723,3.781,3.552,3.415
+oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L2,True,3,6310.113,6336.906,6336.906,6308.959,6279.859
+oracle-nosql,q5,complex,Movies in both Drama and Horror,L1,False,20,162.862,169.853,169.853,163.062,158.851
+oracle-nosql,q5,complex,Movies in both Drama and Horror,L2,True,3,6310.059,6328.899,6328.899,6314.974,6305.964
+oracle-nosql,q6,complex,Top 20 of Drama by popularity,L1,True,3,536.289,537.978,537.978,534.492,529.208
+oracle-nosql,q6,complex,Top 20 of Drama by popularity,L2,False,50,1.509,1.582,1.731,1.516,1.466
+oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,278.786,289.986,289.986,282.435,278.534
+oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L2,True,3,992.0,1012.753,1012.753,987.936,959.054
+oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,769.357,769.889,769.889,768.152,765.209
+oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,7.259,9.849,9.849,7.612,6.464
+oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,486.019,492.528,492.528,487.468,483.857
+oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,2.315,2.613,2.613,2.365,2.226
+oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,906.883,929.571,929.571,913.806,904.965
+oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,0.832,0.896,0.896,0.842,0.811

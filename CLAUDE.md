@@ -4,19 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A university coursework project (Неструктурирани бази на податоци, 2025/2026) comparing two
-key-value NoSQL databases — **Oracle NoSQL Database CE** (sub-team A) and **FoundationDB**
-(sub-team B) — over the same TMDB movies dataset (109,222 records, 2000–2020 fetch years).
-The deliverable is an елаборат (report) plus benchmarks, not a shipped application.
+A university coursework project (Неструктурирани бази на податоци, 2025/2026) comparing
+**three** databases over the same TMDB movies dataset (109,222 records, 2000–2020 fetch
+years): two key-value NoSQL stores — **Oracle NoSQL Database CE** (sub-team A) and
+**FoundationDB** (sub-team B) — plus **PostgreSQL** as a joint relational control, added
+by the team to give the two key-value stores a baseline to be measured against. The
+deliverable is an елаборат (report) plus benchmarks, not a shipped application.
+
+PostgreSQL is a *control*, not a third contender: same two models, same ten queries, same
+harness, and deliberately **no** normalized relational schema. It is there to answer whether
+the key-value stores bought anything over a relational baseline on this data.
 
 **`PLAN.md` is the source of truth.** It carries the phase plan, verified dataset facts,
 key-space designs (L1/L2), the 10 query definitions, and the benchmark protocol. Read it
 before doing substantive work; update its status markers when a phase advances.
 
-Phase 1 (installation) is complete. Phases 2–4 (loaders, queries, benchmarks) are unwritten —
-`common/`, `oracle/`, `fdb/`, and `bench/` do not exist yet. `PLAN.md §1.2` gives the intended
-layout, and explicitly says the shared `common/` module is to be written by hand incrementally,
-not scaffolded up front.
+Phases 1–4 are done for all three databases. The stacks are up, both schemas load and
+verify, all ten queries are implemented on L1 and L2 in every database (`bench/queries.py`),
+and the full Phase 4 sweep — latency, concurrency, and 1-vs-4 CPUs — was measured on
+**2026-09-13, all three databases on one machine in one sitting** (macOS 15 / Apple Silicon).
+Results in `bench/results/*.csv`, analysis in [docs/schema-comparison.md](docs/schema-comparison.md).
+
+Headline: PostgreSQL was fastest on all twenty query/model combinations, so at this scale
+the key-value stores bought nothing measurable — with three real qualifications recorded in
+§5.8. Three earlier conclusions changed when everything was re-measured on one machine; they
+are marked ⚠ in §5. What is still open: three repetitions per configuration, per-model
+footprints, and FoundationDB's multi-process cluster (`configure double ssd`).
 
 ## Setup
 
@@ -26,6 +39,7 @@ python download.py                    # populates data/ from Kaggle (gitignored,
 cd docker/oracle-nosql && docker compose up -d --build
 cd docker/foundationdb && docker compose up -d --build
 docker exec fdb fdbcli --exec "configure new single ssd"   # MANDATORY once per fdbdata volume
+cd docker/postgres && docker compose up -d --build
 ```
 
 Smoke tests (run these to confirm a machine is set up):
@@ -33,22 +47,33 @@ Smoke tests (run these to confirm a machine is set up):
 ```bash
 docker compose exec client python docker/oracle-nosql/smoke_test.py   # from docker/oracle-nosql
 docker compose exec client python docker/foundationdb/smoke_test.py   # from docker/foundationdb
+docker compose exec client python docker/postgres/smoke_test.py       # from docker/postgres
 ```
 
-There is no build, lint, or unit-test suite. Verification is the smoke tests plus the
-checklists in `docker/*/README.md`.
+There is no build, lint, or unit-test suite. Verification is the smoke tests, the checklists
+in `docker/*/README.md`, `python -m common.verify_schemas` (offline), `common.live_check`
+(per database), and `python -m bench.answers --compare`, which checks that every
+implementation of every query — six of them, plus a brute-force one computed straight from
+`data/` — returns the same answer.
+
+The client container names are `kv-client`, `fdb-client` and `pg-client`.
 
 ## Non-negotiable constraints
 
 These were established by actual debugging during Phase 1; violating them silently breaks things.
 
-- **Never add a `platform:` key to either compose file.** Both images are multi-arch. Forcing
-  `linux/amd64` runs under emulation and invalidates every Phase 4 benchmark number.
+- **Never add a `platform:` key to any of the three compose files.** All three images are
+  multi-arch. Forcing `linux/amd64` runs under emulation and invalidates every Phase 4
+  benchmark number from that machine.
 - **All database access runs inside the `client` container**, not from the host. For
   FoundationDB this is mandatory: the cluster file advertises the container IP, and the
   Linux `network_mode: host` workaround does not work on Docker Desktop for Mac. For Oracle
-  NoSQL it is a fairness requirement — both DBs must be driven from equivalent Python 3.11
-  client containers. Published host ports (4500, 5000, 5999) are for diagnostics only.
+  NoSQL and PostgreSQL it is a fairness requirement — all three DBs must be driven from
+  equivalent Python 3.11 client containers. Published host ports (4500, 5000, 5999, 5433)
+  are for diagnostics only.
+- **PostgreSQL runs with stock configuration.** `shared_buffers` stays at 128 MB and nothing
+  else is touched, because kvlite and `fdbserver` are equally untuned. Tuning only the
+  relational engine is the easiest available way to make the whole comparison meaningless.
 - **`foundationdb` pip version must exactly equal the server image tag** (`7.3.79` today).
   Bump both together or neither. API version is `730`.
 - **Oracle NoSQL is reached over the HTTP proxy on 8080 via `borneo`**, never port 5000
@@ -82,11 +107,42 @@ Oracle NoSQL: supports SQL `GROUP BY`, indexes on JSON array fields (`doc.genre_
 and composite keys with a shard component (`PRIMARY KEY(SHARD(year), chunk)`). kvlite is
 single-node by design — state that as a limitation rather than simulating a cluster.
 
+PostgreSQL: JSONB with a GIN index (`jsonb_path_ops`) for array containment, expression
+B-trees over JSON paths, `LATERAL jsonb_array_elements_text` to group by an array element in
+one statement, and `FILTER` to apply a vote floor in the same pass. Two things it cannot do
+and one it does unasked, all of which are results rather than incidents:
+
+- **No index over "array element paired with a scalar."** The L1 `idx_genre_pop` family has
+  no relational expression — an expression index yields one entry per row, and the family
+  needs one per (movie, genre). GIN indexes the array but carries no order. Query 6 is
+  therefore served either by membership or by order, never both.
+- **JSONB is not the bytes it was given.** It decomposes and reprints, so `movies::text`
+  measures several KB larger than the chunk the key-value stores hold. Compare chunk
+  *boundaries*, never byte lengths, when checking the three databases hold the same data.
+  The normalization in `common/dataset.py` already sorts keys and drops nulls, so nothing
+  about the document is actually lost.
+- **It parallelizes a single query.** Query 8's plan shows `Workers Launched: 2` at stock
+  settings. It is the only one of the three that uses more than one core for one query,
+  which matters for requirement 4.
+
 ## Working conventions
 
-- Both sub-teams must implement the *same* L1 and L2 models and the *same* 10 query semantics,
-  or the Phase 4 comparison is worthless. Key formats and query definitions belong in `common/`
-  and must be agreed before either loader is written.
+- All three implementations must use the *same* L1 and L2 models and the *same* 10 query
+  semantics, or the Phase 4 comparison is worthless. Key formats and query definitions belong
+  in `common/` and must be agreed before any loader is written. `python -m bench.answers
+  --compare` is what enforces this; run it before believing any timing.
+- **Same semantics, idiomatic implementation.** The three backends are not transliterations of
+  each other — each database is asked the question the way that database is meant to be asked.
+  Oracle NoSQL uses `GROUP BY` where FoundationDB scans client-side; PostgreSQL unnests L2
+  chunks inside the executor where the other two ship all 806 chunks to the client. Those are
+  real capability differences and belong in the report; hobbling one engine to match another
+  would measure nothing. Wherever it changes which side of the connection the work happens on,
+  say so next to the number.
+- **Never let a sandbox number reach the report.** `sandbox/make_corpus.py` generates a
+  stand-in corpus with the measured *shape* of the real dataset for verifying code on a
+  machine with no Kaggle access. It proves correctness and nothing else. Every timing in the
+  елаборат comes from a run on the real `data/`, and all three databases' numbers must come
+  from the same machine in the same sitting.
 - Loaders must be idempotent and restartable, and must record wall-clock load time and resulting
   on-disk size — both feed the Phase 4 results section.
 - `docker/*/README.md` are literal installation logs, and section 4 of the елаборат is graded on

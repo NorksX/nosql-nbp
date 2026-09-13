@@ -1,7 +1,13 @@
 database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
-foundationdb,q1,L1,Point lookup by TMDB id,1,8.0,15584,1948.0,0.473,0.754,1.256,0.512
-foundationdb,q1,L1,Point lookup by TMDB id,4,8.0,48516,6064.5,0.545,0.818,1.895,0.658
-foundationdb,q1,L1,Point lookup by TMDB id,16,8.0,97680,12210.0,1.274,1.706,2.196,1.309
-foundationdb,q8,L2,Avg rating & count per genre per year,1,8.0,1363,170.4,5.089,10.7,17.324,5.868
-foundationdb,q8,L2,Avg rating & count per genre per year,4,8.0,3112,389.0,9.289,16.391,24.205,10.283
-foundationdb,q8,L2,Avg rating & count per genre per year,16,8.0,7694,961.8,16.255,21.935,25.283,16.651
+foundationdb,q1,L1,Point lookup by TMDB id,1,8.0,4445,555.6,1.887,2.65,3.109,1.798
+foundationdb,q1,L1,Point lookup by TMDB id,4,8.0,16696,2087.0,1.958,2.875,3.452,1.915
+foundationdb,q1,L1,Point lookup by TMDB id,16,8.0,57346,7168.2,2.138,3.195,3.748,2.232
+foundationdb,q3,L2,All movies of year 2017,1,8.0,118,14.8,68.452,73.307,73.699,68.08
+foundationdb,q3,L2,All movies of year 2017,4,8.0,481,60.1,67.202,70.521,71.95,66.674
+foundationdb,q3,L2,All movies of year 2017,16,8.0,905,113.1,138.759,195.148,233.755,142.799
+foundationdb,q6,L2,Top 20 of Drama by popularity,1,8.0,3237,404.6,2.309,3.75,4.321,2.469
+foundationdb,q6,L2,Top 20 of Drama by popularity,4,8.0,8908,1113.5,3.629,4.976,5.276,3.592
+foundationdb,q6,L2,Top 20 of Drama by popularity,16,8.0,34479,4309.9,3.586,5.009,5.978,3.713
+foundationdb,q8,L2,Avg rating & count per genre per year,1,8.0,855,106.9,9.311,11.034,11.462,9.357
+foundationdb,q8,L2,Avg rating & count per genre per year,4,8.0,3316,414.5,9.88,11.018,11.377,9.657
+foundationdb,q8,L2,Avg rating & count per genre per year,16,8.0,9519,1189.9,13.231,20.194,24.782,13.46

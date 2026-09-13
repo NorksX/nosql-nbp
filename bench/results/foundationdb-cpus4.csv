@@ -1,21 +1,21 @@
 database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
-foundationdb,q1,simple,Point lookup by TMDB id,L1,False,200,0.452,0.654,1.265,0.494,0.36
-foundationdb,q1,simple,Point lookup by TMDB id,L2,True,3,442.037,452.31,452.31,444.496,439.142
-foundationdb,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,0.479,0.72,1.219,0.504,0.347
-foundationdb,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,443.379,1411.434,1411.434,762.953,434.045
-foundationdb,q3,simple,All movies of year 2017,L1,False,50,27.248,31.908,36.619,27.532,25.042
-foundationdb,q3,simple,All movies of year 2017,L2,False,50,33.248,36.948,44.691,33.859,31.146
-foundationdb,q4,simple,Language 'en' with vote_count > 500,L1,False,50,4.367,7.01,8.784,4.71,3.938
-foundationdb,q4,simple,Language 'en' with vote_count > 500,L2,True,3,455.835,457.178,457.178,455.423,453.258
-foundationdb,q5,complex,Movies in both Drama and Horror,L1,False,20,158.671,171.247,171.247,159.891,154.116
-foundationdb,q5,complex,Movies in both Drama and Horror,L2,True,3,465.139,466.191,466.191,458.872,445.287
-foundationdb,q6,complex,Top 20 of Drama by popularity,L1,False,50,1.441,1.681,2.114,1.464,1.26
-foundationdb,q6,complex,Top 20 of Drama by popularity,L2,False,50,0.992,1.562,1.88,1.057,0.868
-foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,357.48,362.007,362.007,352.924,339.285
-foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L2,False,20,75.708,81.04,81.04,75.517,71.668
-foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,948.004,956.524,956.524,946.751,935.724
-foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,4.429,5.257,5.257,4.73,4.413
-foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,924.343,937.865,937.865,922.437,905.103
-foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,1.724,1.961,1.961,1.752,1.615
-foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,941.871,950.608,950.608,936.475,916.947
-foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,1.027,1.29,1.29,1.055,0.923
+foundationdb,q1,simple,Point lookup by TMDB id,L1,False,200,1.999,2.961,3.027,1.952,0.838
+foundationdb,q1,simple,Point lookup by TMDB id,L2,True,3,696.339,773.341,773.341,715.022,675.386
+foundationdb,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,2.0,3.002,3.052,1.923,0.709
+foundationdb,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,671.481,755.899,755.899,698.567,668.321
+foundationdb,q3,simple,All movies of year 2017,L1,False,50,24.627,26.906,27.13,24.657,23.426
+foundationdb,q3,simple,All movies of year 2017,L2,False,50,73.956,75.854,83.492,73.38,63.394
+foundationdb,q4,simple,Language 'en' with vote_count > 500,L1,False,50,9.021,11.107,12.724,9.193,7.822
+foundationdb,q4,simple,Language 'en' with vote_count > 500,L2,True,3,688.081,700.042,700.042,690.661,683.859
+foundationdb,q5,complex,Movies in both Drama and Horror,L1,False,20,129.117,131.309,131.309,129.21,126.172
+foundationdb,q5,complex,Movies in both Drama and Horror,L2,True,3,720.847,726.864,726.864,713.627,693.172
+foundationdb,q6,complex,Top 20 of Drama by popularity,L1,False,50,4.933,6.001,6.053,4.685,2.992
+foundationdb,q6,complex,Top 20 of Drama by popularity,L2,False,50,2.107,3.242,3.832,2.299,1.477
+foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,313.266,316.195,316.195,307.748,293.783
+foundationdb,q7,complex,"Same language, +/-1 year of Ad Astra",L2,False,20,161.085,169.884,169.884,160.896,153.766
+foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,1336.071,1338.827,1338.827,1331.115,1318.448
+foundationdb,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,10.012,10.139,10.139,9.834,9.015
+foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,1305.95,1321.004,1321.004,1309.335,1301.051
+foundationdb,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,4.033,5.972,5.972,4.409,3.979
+foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,1322.974,1324.029,1324.029,1322.378,1320.13
+foundationdb,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,2.028,3.024,3.024,2.398,1.98

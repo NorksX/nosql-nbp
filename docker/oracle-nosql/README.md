@@ -119,6 +119,45 @@ indirection, so it behaves identically from the host and from a sibling containe
 macOS and on x64 Linux alike. Ports 5000 and 5999 stay published for `ping` and admin
 inspection only.
 
+### Problem 3 — host port 5000 is taken by macOS (AirPlay Receiver)
+
+On macOS 15 (Darwin 25.5.0, Apple Silicon) `docker compose up -d` refused to start the
+store at all:
+
+```
+$ docker compose up -d --build
+ Container kvlite Starting
+Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:5000 ->
+127.0.0.1:0: listen tcp 0.0.0.0:5000: bind: address already in use
+```
+
+The holder is macOS Control Center, which listens on `*:5000` for AirPlay Receiver:
+
+```
+$ lsof -nP -iTCP:5000 -sTCP:LISTEN
+COMMAND   PID           USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+ControlCe 663 bojanaandonova   11u  IPv4 0x99adc3814bc28c24      0t0  TCP *:5000 (LISTEN)
+ControlCe 663 bojanaandonova   12u  IPv6 0x1a88788b8d83c5d5      0t0  TCP *:5000 (LISTEN)
+```
+
+**Fix:** publish the store service on host port **5001** instead
+(`- "5001:5000"`). The container-internal port is unchanged, and by Problem 2 no client
+ever uses it — every driver talks to `kvlite:8080` inside `kvnet`. Host ports are for
+diagnostics only, so nothing that is measured is affected. The alternative is to turn off
+System Settings → General → AirDrop & Handoff → AirPlay Receiver, which is a change to the
+developer's machine rather than to the project, so the compose file carries the fix.
+
+```
+$ docker compose up -d
+ Container kvlite Started
+ Container kv-client Started
+$ docker inspect --format '{{.State.Health.Status}}' kvlite
+healthy
+```
+
+Teammates on Linux or Windows are unaffected — nothing there binds 5000 by default — and
+the remapped port works for them too.
+
 ## Connection details
 
 | From | Endpoint |

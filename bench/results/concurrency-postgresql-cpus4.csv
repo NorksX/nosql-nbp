@@ -1,0 +1,13 @@
+database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
+postgresql,q1,L1,Point lookup by TMDB id,1,8.0,136090,17011.2,0.058,0.064,0.069,0.058
+postgresql,q1,L1,Point lookup by TMDB id,4,8.0,463779,57972.4,0.065,0.094,0.115,0.069
+postgresql,q1,L1,Point lookup by TMDB id,16,8.0,1706044,213255.5,0.054,0.183,0.307,0.075
+postgresql,q3,L2,All movies of year 2017,1,8.0,125018,15627.2,0.063,0.07,0.08,0.064
+postgresql,q3,L2,All movies of year 2017,4,8.0,386349,48293.6,0.079,0.109,0.135,0.082
+postgresql,q3,L2,All movies of year 2017,16,8.0,1136693,142086.6,0.07,0.245,0.45,0.112
+postgresql,q6,L2,Top 20 of Drama by popularity,1,8.0,123612,15451.5,0.064,0.07,0.075,0.064
+postgresql,q6,L2,Top 20 of Drama by popularity,4,8.0,352345,44043.1,0.088,0.126,0.148,0.09
+postgresql,q6,L2,Top 20 of Drama by popularity,16,8.0,886891,110861.4,0.079,0.305,0.504,0.144
+postgresql,q8,L2,Avg rating & count per genre per year,1,8.0,33400,4175.0,0.239,0.254,0.263,0.239
+postgresql,q8,L2,Avg rating & count per genre per year,4,8.0,59039,7379.9,0.546,0.614,0.672,0.541
+postgresql,q8,L2,Avg rating & count per genre per year,16,8.0,99165,12395.6,1.09,2.764,5.811,1.29

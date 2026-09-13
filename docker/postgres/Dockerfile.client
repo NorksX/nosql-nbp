@@ -1,0 +1,11 @@
+# Client container for PostgreSQL, deliberately the same base image as the
+# Oracle NoSQL and FoundationDB clients so all three databases are driven from
+# an equivalent Python 3.11 environment.
+#
+# Note what is NOT here, because it is a result worth reporting: FoundationDB's
+# client needs libfdb_c.so lifted out of the server image and pinned to the
+# exact server version, and Oracle NoSQL's needs the borneo SDK aimed at an
+# HTTP proxy. PostgreSQL's client is one pip install of a driver that speaks a
+# stable wire protocol, and psycopg 3.2 talks to any server from 10 upwards.
+FROM python:3.11-slim
+RUN pip install --no-cache-dir "psycopg[binary]==3.2.3" orjson tqdm

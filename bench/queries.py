@@ -1,12 +1,21 @@
-"""The ten queries, implemented four times: L1 and L2, on each database.
+"""The ten queries, implemented six times: L1 and L2, on each of three databases.
 
 Every implementation returns a *canonical result* — a plain JSON-comparable
-value — so the harness can assert that all four agree before it times any of
-them. A fast wrong answer is worth nothing, and the L1-vs-L2 comparison is only
+value — so the harness can assert that they agree before it times any of them.
+A fast wrong answer is worth nothing, and the L1-vs-L2 comparison is only
 meaningful if both models answer the same question identically.
 
-Query parameters come from `common.keyspec` so nothing drifts between the two
+Query parameters come from `common.keyspec` so nothing drifts between the
 databases.
+
+The three implementations of a query are deliberately *not* transliterations of
+each other. Each database is asked the same question in the way that database
+is meant to be asked — SQL with `GROUP BY` where there is a query planner,
+hand-built range reads where there is an ordered keyspace — because a
+comparison of deliberately hobbled implementations would measure nothing. Where
+that choice changes what work happens on which side of the connection, it is
+called out in a comment, and the consequences are discussed in
+docs/schema-comparison.md.
 """
 
 from __future__ import annotations
@@ -469,8 +478,326 @@ class OracleBackend(Backend):
 
 
 # ==========================================================================
+# PostgreSQL — the relational control
+# ==========================================================================
+
+
+class PostgresBackend(Backend):
+    """The same two models, in a relational engine.
+
+    Two implementation choices shape every number this class produces, and both
+    are deliberate:
+
+    **The L2 fallback runs inside the server.** When L2 has no access path —
+    queries 1, 2, 4, 5 — Oracle NoSQL and FoundationDB both ship all 806 chunks
+    to the client and scan them in Python, because neither can look inside a
+    stored blob. PostgreSQL can: ``jsonb_array_elements`` unnests a chunk in the
+    executor, so the scan happens next to the data and only the answer crosses
+    the connection. Writing it as a client-side scan instead would have been
+    easy and would have measured nothing except how fast Python parses JSON.
+    The comparison is between idiomatic implementations, which is the same rule
+    that already lets Oracle NoSQL use ``GROUP BY`` where FoundationDB scans.
+
+    **Prepared statements are left on.** psycopg promotes a statement to a
+    server-side prepared statement after five executions, so the benchmark's
+    steady state has the parse and plan cached. That is what a real application
+    gets, and it is the counterpart of the client-side conveniences the other
+    two backends keep — borneo materializing rows, the FDB binding pipelining
+    futures. It is stated here because it is part of what the numbers measure.
+    """
+
+    name = "postgresql"
+
+    def __init__(self):
+        import psycopg
+
+        self.conn = psycopg.connect(
+            os.environ.get("PG_DSN", "postgresql://nbp:nbp@pg:5432/tmdb"),
+            autocommit=True,
+        )
+        self.server_version = self.conn.execute("SHOW server_version").fetchone()[0]
+
+    def close(self) -> None:
+        self.conn.close()
+
+    # -- primitives --------------------------------------------------------
+
+    def rows(self, statement: str, params: tuple = ()) -> list[tuple]:
+        with self.conn.cursor() as cur:
+            cur.execute(statement, params, prepare=True)
+            return cur.fetchall()
+
+    def scalar(self, statement: str, params: tuple = ()):
+        rows = self.rows(statement, params)
+        return rows[0][0] if rows else None
+
+    # -- L1 ----------------------------------------------------------------
+
+    def l1_q1(self):
+        return self.scalar("SELECT doc ->> 'title' FROM l1_movies WHERE id = %s",
+                           (self.probe_id,))
+
+    def l1_q2(self):
+        return self.scalar("SELECT id FROM l1_movies WHERE doc ->> 'id_imdb' = %s",
+                           (self.probe_imdb,))
+
+    def l1_q3(self):
+        return self.scalar(
+            "SELECT count(*) FROM l1_movies WHERE (doc ->> 'year')::int = %s",
+            (ks.PROBE_YEAR,),
+        )
+
+    def l1_q4(self):
+        # idx_lang_votes is a composite B-tree, so this is one index range scan
+        # starting inside the language — the same shape as FoundationDB's
+        # two-sided range read, expressed as a predicate instead of as bounds.
+        return self.scalar(
+            "SELECT count(*) FROM l1_movies WHERE doc ->> 'original_language' = %s "
+            "AND (doc ->> 'vote_count')::int > %s",
+            (ks.PROBE_LANG, ks.PROBE_VOTES),
+        )
+
+    def l1_q5(self):
+        # Two GIN lookups the planner intersects itself; FoundationDB does the
+        # same intersection in Python over two scanned key ranges.
+        return self.scalar(
+            "SELECT count(*) FROM l1_movies "
+            "WHERE doc -> 'genre_ids' @> %s::jsonb AND doc -> 'genre_ids' @> %s::jsonb",
+            (str(ks.PROBE_GENRE), str(ks.PROBE_GENRE_B)),
+        )
+
+    def l1_q6(self):
+        # The query the L1 index set cannot serve properly in a relational
+        # engine: GIN finds the genre but carries no order, so the matching rows
+        # must be sorted afterwards. See keyspec.POSTGRES_L1_INDEX_DDL.
+        return [
+            r[0]
+            for r in self.rows(
+                "SELECT id FROM l1_movies WHERE doc -> 'genre_ids' @> %s::jsonb "
+                "ORDER BY (doc ->> 'popularity')::float8 DESC, id ASC LIMIT %s",
+                (str(ks.PROBE_GENRE), ks.TOP_K),
+            )
+        ]
+
+    def l1_q7(self):
+        # L1's documented weak spot — no (lang, year) index. PostgreSQL still
+        # gets to pick the cheaper of the two single-column indexes and filter
+        # the rest server-side, which is the Oracle NoSQL situation, not the
+        # FoundationDB one (where the fallback means fetching every candidate).
+        return self.scalar(
+            "SELECT count(*) FROM l1_movies "
+            "WHERE doc ->> 'original_language' = %s "
+            "AND (doc ->> 'year')::int BETWEEN %s AND %s AND id <> %s",
+            (self.probe_lang, self.probe_year - 1, self.probe_year + 1, self.probe_id),
+        )
+
+    def l1_q8(self):
+        # One statement. Oracle NoSQL cannot group by an element of a JSON array
+        # and needs 19 separate queries; FoundationDB has no server-side
+        # aggregation at all. This is the clearest single advantage the
+        # relational engine has on this query set.
+        return sorted(
+            [g, y, n, a]
+            for g, y, n, a in self.rows(
+                "SELECT g.value::int AS genre_id, (doc ->> 'year')::int AS y, "
+                "count(*) AS n, avg((doc ->> 'vote_average')::float8) AS a "
+                "FROM l1_movies, LATERAL jsonb_array_elements_text(doc -> 'genre_ids') g "
+                "WHERE (doc ->> 'year')::int BETWEEN %s AND %s "
+                "GROUP BY 1, 2",
+                (YEARS[0], YEARS[-1]),
+            )
+        )
+
+    def l1_q9(self):
+        return top_languages(
+            self.rows(
+                "SELECT doc ->> 'original_language', count(*), "
+                "avg((doc ->> 'popularity')::float8) FROM l1_movies GROUP BY 1"
+            )
+        )
+
+    def l1_q10(self):
+        # FILTER does the vote floor in the same pass, so this is one scan where
+        # Oracle NoSQL needs two GROUP BY statements joined client-side.
+        return sorted(
+            [y, n, p, a]
+            for y, n, p, a in self.rows(
+                "SELECT (doc ->> 'year')::int AS y, count(*) AS n, "
+                "avg((doc ->> 'popularity')::float8) AS p, "
+                "coalesce(avg((doc ->> 'vote_average')::float8) "
+                "  FILTER (WHERE (doc ->> 'vote_count')::int >= %s), 0.0) AS a "
+                "FROM l1_movies WHERE (doc ->> 'year')::int BETWEEN %s AND %s "
+                "GROUP BY 1",
+                (ks.MIN_VOTE_COUNT, YEARS[0], YEARS[-1]),
+            )
+        )
+
+    # -- L2 ----------------------------------------------------------------
+
+    def l2_q1(self):
+        # No path from an id to a movie, so every chunk is a candidate. The
+        # LIMIT 1 lets the executor stop at the first match, which is the same
+        # early exit the other two backends make in Python.
+        return self.scalar(
+            "SELECT m ->> 'title' FROM l2_movies_by_year, "
+            "LATERAL jsonb_array_elements(movies) m "
+            "WHERE (m ->> 'id')::int = %s LIMIT 1",
+            (self.probe_id,),
+        )
+
+    def l2_q2(self):
+        return self.scalar(
+            "SELECT (m ->> 'id')::int FROM l2_movies_by_year, "
+            "LATERAL jsonb_array_elements(movies) m "
+            "WHERE m ->> 'id_imdb' = %s LIMIT 1",
+            (self.probe_imdb,),
+        )
+
+    def l2_q3(self):
+        return self.scalar(
+            "SELECT sum(n_movies) FROM l2_movies_by_year WHERE year = %s",
+            (ks.PROBE_YEAR,),
+        )
+
+    def l2_q4(self):
+        return self.scalar(
+            "SELECT count(*) FROM l2_movies_by_year, "
+            "LATERAL jsonb_array_elements(movies) m "
+            "WHERE m ->> 'original_language' = %s AND (m ->> 'vote_count')::int > %s",
+            (ks.PROBE_LANG, ks.PROBE_VOTES),
+        )
+
+    def l2_q5(self):
+        return self.scalar(
+            "SELECT count(*) FROM l2_movies_by_year, "
+            "LATERAL jsonb_array_elements(movies) m "
+            "WHERE m -> 'genre_ids' @> %s::jsonb AND m -> 'genre_ids' @> %s::jsonb",
+            (str(ks.PROBE_GENRE), str(ks.PROBE_GENRE_B)),
+        )
+
+    def l2_q6(self):
+        return [
+            r[0]
+            for r in self.rows(
+                "SELECT (doc ->> 'id')::int FROM l2_genre_top WHERE genre_id = %s "
+                "ORDER BY pos",
+                (ks.PROBE_GENRE,),
+            )
+        ]
+
+    def l2_q7(self):
+        return self.scalar(
+            "SELECT count(*) FROM l2_movies_by_year, "
+            "LATERAL jsonb_array_elements(movies) m "
+            "WHERE year BETWEEN %s AND %s AND m ->> 'original_language' = %s "
+            "AND (m ->> 'id')::int <> %s",
+            (self.probe_year - 1, self.probe_year + 1, self.probe_lang, self.probe_id),
+        )
+
+    def l2_q8(self):
+        return sorted(
+            [g, y, n, a]
+            for g, y, n, a in self.rows(
+                "SELECT genre_id, year, n_movies, avg_vote FROM l2_genre_year_stats "
+                "WHERE year BETWEEN %s AND %s",
+                (YEARS[0], YEARS[-1]),
+            )
+        )
+
+    def l2_q9(self):
+        return top_languages(
+            self.rows("SELECT lang, n_movies, avg_popularity FROM l2_lang_stats")
+        )
+
+    def l2_q10(self):
+        return sorted(
+            [y, n, p, a]
+            for y, n, p, a in self.rows(
+                "SELECT year, n_movies, avg_popularity, avg_vote_rated "
+                "FROM l2_year_stats WHERE year BETWEEN %s AND %s",
+                (YEARS[0], YEARS[-1]),
+            )
+        )
+
+
+# ==========================================================================
 # Client-side aggregation — what FoundationDB has to do for queries 8-10
 # ==========================================================================
+
+
+class DatasetBackend(Backend):
+    """The answers, computed from ``data/`` by brute force. No database.
+
+    This is the ground truth the three databases are checked against by
+    ``bench/answers.py``. Every method reads the corpus and does the obvious
+    slow thing, because the point is to be obviously correct rather than fast —
+    if a hand-built FoundationDB key range, an Oracle NoSQL `=any` predicate and
+    a PostgreSQL GIN lookup all agree with this, they are all right.
+
+    It answers under the name of either model; L1 and L2 are properties of how
+    the data is stored, and the corpus is not stored at all here.
+    """
+
+    name = "dataset"
+
+    def __init__(self):
+        from common.dataset import iter_movies
+
+        self.movies = list(iter_movies())
+
+    def run(self, model: str, qid: str):
+        return getattr(self, qid)()
+
+    def supports(self, model: str, qid: str) -> bool:
+        return hasattr(self, qid)
+
+    def q1(self):
+        return next(m["title"] for m in self.movies if m["id"] == self.probe_id)
+
+    def q2(self):
+        return next(m["id"] for m in self.movies if m.get("id_imdb") == self.probe_imdb)
+
+    def q3(self):
+        return sum(1 for m in self.movies if m.get("year") == ks.PROBE_YEAR)
+
+    def q4(self):
+        return sum(
+            1
+            for m in self.movies
+            if m.get("original_language") == ks.PROBE_LANG
+            and m["vote_count"] > ks.PROBE_VOTES
+        )
+
+    def q5(self):
+        return sum(
+            1
+            for m in self.movies
+            if ks.PROBE_GENRE in m["genre_ids"] and ks.PROBE_GENRE_B in m["genre_ids"]
+        )
+
+    def q6(self):
+        pool = [m for m in self.movies if ks.PROBE_GENRE in m["genre_ids"]]
+        pool.sort(key=lambda m: (-m["popularity"], m["id"]))
+        return [m["id"] for m in pool[: ks.TOP_K]]
+
+    def q7(self):
+        window = range(self.probe_year - 1, self.probe_year + 2)
+        return sum(
+            1
+            for m in self.movies
+            if m.get("year") in window
+            and m.get("original_language") == self.probe_lang
+            and m["id"] != self.probe_id
+        )
+
+    def q8(self):
+        return aggregate_genre_year(self.movies)
+
+    def q9(self):
+        return aggregate_languages(self.movies)
+
+    def q10(self):
+        return aggregate_years(self.movies)
 
 
 def aggregate_genre_year(movies) -> list:
