@@ -103,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark L1 vs L2 on one database.")
     parser.add_argument("--db", choices=("oracle", "fdb"))
     parser.add_argument("--only", help="comma-separated query ids, e.g. q1,q8")
+    parser.add_argument("--tag", help="suffix for the results file, e.g. cpus1 "
+                        "writes <database>-cpus1.csv instead of <database>.csv")
     args = parser.parse_args(argv)
 
     database = args.db or ("oracle" if os.environ.get("NOSQL_ENDPOINT") else "fdb")
@@ -162,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     backend.close()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"{backend.name}.csv"
+    suffix = f"-{args.tag}" if args.tag else ""
+    out = RESULTS_DIR / f"{backend.name}{suffix}.csv"
     with open(out, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()

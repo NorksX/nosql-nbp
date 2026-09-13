@@ -1,0 +1,7 @@
+database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
+oracle-nosql,q1,L1,Point lookup by TMDB id,1,8.0,6426,803.2,1.002,1.695,3.623,1.244
+oracle-nosql,q1,L1,Point lookup by TMDB id,4,8.0,21430,2678.8,1.389,2.175,2.834,1.492
+oracle-nosql,q1,L1,Point lookup by TMDB id,16,8.0,34678,4334.8,3.393,5.971,7.744,3.691
+oracle-nosql,q8,L2,Avg rating & count per genre per year,1,8.0,708,88.5,11.046,13.329,15.356,11.313
+oracle-nosql,q8,L2,Avg rating & count per genre per year,4,8.0,1903,237.9,16.049,23.198,28.058,16.835
+oracle-nosql,q8,L2,Avg rating & count per genre per year,16,8.0,1109,138.6,115.793,159.769,182.263,115.963

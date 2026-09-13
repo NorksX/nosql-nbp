@@ -1,0 +1,21 @@
+database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
+oracle-nosql,q1,simple,Point lookup by TMDB id,L1,False,200,1.056,1.749,1.924,1.134,0.887
+oracle-nosql,q1,simple,Point lookup by TMDB id,L2,True,3,9309.502,9605.712,9605.712,9307.208,9006.409
+oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L1,False,200,1.716,2.322,29.775,2.209,1.506
+oracle-nosql,q2,simple,Lookup by IMDb id (alternate key),L2,True,3,9214.56,10039.444,10039.444,9448.635,9091.903
+oracle-nosql,q3,simple,All movies of year 2017,L1,False,50,14.361,15.997,18.652,14.612,13.603
+oracle-nosql,q3,simple,All movies of year 2017,L2,False,50,32.865,48.729,65.194,34.824,31.27
+oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L1,False,50,6.329,8.069,13.893,6.703,5.744
+oracle-nosql,q4,simple,Language 'en' with vote_count > 500,L2,True,3,10861.409,13410.375,13410.375,11645.616,10665.065
+oracle-nosql,q5,complex,Movies in both Drama and Horror,L1,True,3,253.608,271.411,271.411,257.069,246.189
+oracle-nosql,q5,complex,Movies in both Drama and Horror,L2,True,3,8899.649,9086.215,9086.215,8946.93,8854.925
+oracle-nosql,q6,complex,Top 20 of Drama by popularity,L1,True,3,892.873,1052.916,1052.916,943.241,883.935
+oracle-nosql,q6,complex,Top 20 of Drama by popularity,L2,False,50,2.511,3.088,3.518,2.579,2.263
+oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L1,True,3,424.917,431.56,431.56,423.734,414.725
+oracle-nosql,q7,complex,"Same language, +/-1 year of Ad Astra",L2,True,3,1401.472,1447.992,1447.992,1416.022,1398.603
+oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L1,True,3,1199.042,1206.631,1206.631,1192.9,1173.027
+oracle-nosql,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",L2,False,5,11.089,11.644,11.644,11.221,11.001
+oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L1,True,3,776.074,804.067,804.067,784.802,774.266
+oracle-nosql,q9,aggregate,"Top 10 languages by count, mean popularity",L2,False,5,4.74,4.937,4.937,4.712,4.352
+oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L1,True,3,1380.568,1382.973,1382.973,1372.493,1353.937
+oracle-nosql,q10,aggregate,"Yearly trend, vote_count >= 50",L2,False,5,1.755,2.057,2.057,1.78,1.57

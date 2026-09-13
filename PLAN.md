@@ -157,7 +157,8 @@ baze/
 │   ├── harness.py                 # ✅ correctness gate + latency sweep → results/
 │   ├── report.py                  # ✅ merges results/*.csv into the doc tables
 │   ├── results/                   # ✅ oracle-nosql.csv, foundationdb.csv
-│   └── plots.py                   # ⬜
+│   ├── plots.py                   # ✅ Слика 7–11 (латенција, конкурентност, CPU) → plots/
+│   └── concurrency.py             # ✅ 1/4/16-client sweep (multiprocess) → results/
 └── docs/
     ├── schema-comparison.md       # ✅ L1 vs L2, measured — feeds sections 4-6
     └── elaborat.md  presentation/ # ⬜
@@ -478,8 +479,18 @@ For each query, document: the exact command/code, the result, and **the limitati
 > sort component beating a secondary index plus `ORDER BY`. The plan's expectation that
 > Oracle's server-side `GROUP BY` would be the biggest advantage was **measured and refuted**.
 >
-> ⬜ Still to do: three repetitions, per-model footprints (load one model at a time), the
-> 1/4/16-thread concurrency sweep, the 1-vs-4-CPU runs, and `bench/plots.py`.
+> ✅ Concurrency sweep (`bench/concurrency.py`, 1/4/16 client *processes*, indexed paths
+> only) and the 1-vs-4-CPU runs (`docker update --cpus`, harness `--tag cpus1/cpus4`) are
+> measured — on a second machine (Windows 11 x64, Docker Desktop, 16 CPUs), so those CSVs
+> (`concurrency-*.csv`, `*-cpus{1,4}.csv`) are self-contained relative experiments and are
+> **not comparable with the Fedora absolute numbers above**. Headline: 4 CPUs change
+> single-query p50 by at most ~1.2× on either database, but at 16 concurrent clients
+> Oracle scales 4–7× with cores while FoundationDB (one `fdbserver` process) is flat —
+> its scaling unit is processes, not cores. Charts: `python -m bench.plots` → `bench/plots/`
+> (Слика 7–11).
+>
+> ⬜ Still to do: three repetitions, per-model footprints (load one model at a time), and
+> the multi-process FDB cluster experiment (`configure double ssd`).
 
 Shared harness `bench/harness.py`, run from each database's `client` container, writing CSV to `bench/results/`.
 

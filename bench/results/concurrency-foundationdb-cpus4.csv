@@ -1,0 +1,7 @@
+database,query,model,description,threads,duration_s,ops,throughput_ops_s,p50_ms,p95_ms,p99_ms,mean_ms
+foundationdb,q1,L1,Point lookup by TMDB id,1,8.0,13069,1633.6,0.473,0.958,2.098,0.611
+foundationdb,q1,L1,Point lookup by TMDB id,4,8.0,46736,5842.0,0.567,0.82,1.491,0.684
+foundationdb,q1,L1,Point lookup by TMDB id,16,8.0,78527,9815.9,1.364,1.996,10.19,1.628
+foundationdb,q8,L2,Avg rating & count per genre per year,1,8.0,1286,160.8,5.2,7.347,13.423,6.221
+foundationdb,q8,L2,Avg rating & count per genre per year,4,8.0,4024,503.0,6.259,14.474,21.707,7.956
+foundationdb,q8,L2,Avg rating & count per genre per year,16,8.0,6377,797.1,18.532,31.309,38.941,20.091
