@@ -17,15 +17,17 @@ Every figure draws one series per database that has a results CSV, so the set
 renders with two databases or with three. A database whose CSV is missing is
 reported on stdout and left out rather than crashing the run.
 
-Load times are not in the CSVs (the harness measures queries only); they are
-the measured values from docs/schema-comparison.md §4.1. Update LOAD_SECONDS
-when the load is re-run — including the PostgreSQL entries, which start as None
-and must be filled in from that database's own `common.live_check` output.
+Load times are not in the CSVs — the harness measures queries only. LOAD_SECONDS
+below holds the figures published in the елаборат; `common/live_check.py` writes
+whatever it measures to bench/results/load-times.json, and those values override
+the constants. So re-running a load updates the figures on its own.
 """
 
 from __future__ import annotations
 
 import csv
+import json
+import math
 import sys
 from pathlib import Path
 
@@ -90,7 +92,21 @@ QUERY_LABELS = {
 C_ORACLE = "#2a78d6"
 C_FDB = "#eb6834"
 C_PG = "#c0398e"
-COLORS = {"oracle-nosql": C_ORACLE, "foundationdb": C_FDB, "postgresql": C_PG}
+COLORS = {"oracle-nosql": C_ORACLE, "foundationdb": C_FDB, "postgresql": C_PG,
+          "postgresql-relational": C_PG}
+
+# Слика 12 compares three *models* inside one database, so its series are
+# models rather than databases and it needs its own hues — reusing the
+# database colours there would mean blue meant "Oracle NoSQL" in one figure and
+# "model L1" in the next. Checked the same way as the database palette: against
+# this surface the worst colour-vision separation is ΔE 8.7 and every hue holds
+# 3:1 contrast. R keeps PostgreSQL's magenta, since R is PostgreSQL.
+C_L1, C_L2, C_R = "#6a5acd", "#b07414", "#c0398e"
+MODEL_COLORS = {"L1": C_L1, "L2": C_L2, "R": C_R}
+
+#: The relational model is a separate results file: one model, not two, so it
+#: cannot share a CSV with the key-value pair.
+RELATIONAL = "postgresql-relational"
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
 INK_2 = "#52514e"
@@ -129,6 +145,27 @@ def fmt_ms(value: float) -> str:
     if value < 10:
         return mk_num(value, 2)
     return mk_num(round(value))
+
+
+def load_times() -> dict:
+    """LOAD_SECONDS, with anything common/live_check.py measured layered on top.
+
+    The constants below are the figures published in the елаборат. A live
+    `live_check` run writes bench/results/load-times.json, and those values win
+    — so a re-measurement flows into Слика 7 and Слика 14 without anyone
+    editing this file.
+    """
+    merged = dict(LOAD_SECONDS)
+    path = RESULTS_DIR / "load-times.json"
+    try:
+        measured = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return merged
+    for key, entry in measured.items():
+        database, _, model = key.partition("|")
+        merged[(database, model)] = entry["seconds"]
+    print(f"  (времиња на вчитување од {path.name}: {len(measured)})")
+    return merged
 
 
 def available() -> list[tuple[str, str]]:
@@ -201,12 +238,13 @@ def save(fig, name: str) -> None:
 
 def fig7_load_time(databases: list[tuple[str, str]]) -> None:
     """Слика 7 — Време на вчитување по модел и база."""
+    secs = load_times()
     series = [(slug, label) for slug, label in databases
-              if LOAD_SECONDS.get((slug, "L1")) is not None]
+              if secs.get((slug, "L1")) is not None]
     missing = [label for slug, label in databases if (slug, label) not in series]
     for label in missing:
-        print(f"  (нема измерено време на вчитување за {label} — "
-              f"пополни LOAD_SECONDS во bench/plots.py)")
+        print(f"  (нема време на вчитување за {label} — "
+              f"изврши `python -m common.live_check` врз таа база)")
     if len(series) < 2:
         print("  (премалку измерени времиња — прескокнувам Слика 7)")
         return
@@ -214,15 +252,15 @@ def fig7_load_time(databases: list[tuple[str, str]]) -> None:
     fig, ax = plt.subplots(figsize=(6.4, 3.4))
     groups = ["L1", "L2"]
     offsets = lanes(len(series), 0.18)
-    top = max(LOAD_SECONDS[(slug, m)] for slug, _ in series for m in groups)
+    top = max(secs[(slug, m)] for slug, _ in series for m in groups)
     ax.set_xlim(-0.5, 1.5)
     ax.set_ylim(0, top * 1.15)
     for gi, model in enumerate(groups):
         for (slug, _), off in zip(series, offsets):
-            secs = LOAD_SECONDS[(slug, model)]
+            value = secs[(slug, model)]
             x = gi + off
-            rounded_bar(ax, x, secs, 0.11, COLORS[slug])
-            ax.text(x, secs + top * 0.022, f"{mk_num(secs)} s", ha="center",
+            rounded_bar(ax, x, value, 0.11, COLORS[slug])
+            ax.text(x, value + top * 0.022, f"{mk_num(value)} s", ha="center",
                     va="bottom", fontsize=9, color=INK)
     ax.set_xticks(range(len(groups)))
     ax.set_xticklabels([f"Модел {m}" for m in groups], fontsize=10, color=INK_2)
@@ -515,6 +553,287 @@ def fig11_cpus(cpu: dict, databases: list[tuple[str, str]]) -> None:
     save(fig, "fig11_cpus")
 
 
+# ==========================================================================
+# Слика 12–14 — the relational model. Separate numbers from Слика 7–11 on
+# purpose: those five are what the елаборат embeds, and re-running this
+# module must not silently change them.
+# ==========================================================================
+
+
+def load_relational() -> dict | None:
+    """p50 per query for model R, or None if it has not been benchmarked."""
+    path = RESULTS_DIR / f"{RELATIONAL}.csv"
+    if not path.exists():
+        print(f"  (нема {RELATIONAL}.csv — прескокнувам Слика 12–14)")
+        return None
+    rows = {}
+    with open(path, encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            rows[row["query"]] = {
+                "p50": float(row["p50_ms"]),
+                "scan": row["full_scan"] == "True",
+            }
+    return rows
+
+
+def fig12_model_r_vs_kv(rows: dict, rel: dict) -> None:
+    """Слика 12 — истиот систем, три модела: L1, L2 и R врз PostgreSQL.
+
+    The one figure that isolates the schema from the engine. Everything here
+    is the same PostgreSQL server, the same data and the same ten questions;
+    only the shape of the schema changes.
+    """
+    fig, ax = plt.subplots(figsize=(8.2, 6.0))
+    series = [("L1", lambda q: rows[("postgresql", q, "L1")]),
+              ("L2", lambda q: rows[("postgresql", q, "L2")]),
+              ("R", lambda q: rel[q])]
+    offsets = lanes(3, 0.26)
+    left = 0.02
+    biggest = max(
+        max(rows[("postgresql", f"q{i}", m)]["p50"] for m in ("L1", "L2"))
+        for i in range(1, 11)
+    )
+    biggest = max(biggest, max(r["p50"] for r in rel.values()))
+
+    for qi in range(1, 11):
+        for (label, get), off in zip(series, offsets):
+            r = get(f"q{qi}")
+            y = qi + off
+            if r["scan"]:
+                ax.barh(y, r["p50"] - left, left=left, height=0.22,
+                        facecolor=SURFACE, edgecolor=MODEL_COLORS[label],
+                        linewidth=1.1, zorder=2)
+            else:
+                ax.barh(y, r["p50"] - left, left=left, height=0.22,
+                        facecolor=MODEL_COLORS[label], edgecolor="none", zorder=2)
+            ax.text(r["p50"] * 1.25, y, fmt_ms(r["p50"]), va="center", ha="left",
+                    fontsize=7, color=INK_2)
+
+    ax.set_xscale("log")
+    ax.set_xlim(left, biggest * 9)
+    ticks = [t for t in (0.01, 0.1, 1, 10, 100, 1000, 10000) if t <= biggest * 9]
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([mk_num(t, 2) for t in ticks], fontsize=8.5)
+    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    ax.set_ylim(10.75, 0.25)
+    ax.set_yticks(range(1, 11))
+    ax.set_yticklabels([f"{i}. {QUERY_LABELS[f'q{i}']}" for i in range(1, 11)],
+                       fontsize=9, color=INK_2)
+    ax.set_xlabel("Латенција p50 (ms, логаритамска скала)", fontsize=9, color=INK_2)
+    strip_chrome(ax, y_grid=False)
+    fig.legend(
+        handles=[Patch(facecolor=MODEL_COLORS[m], edgecolor="none", label=f"Модел {m}")
+                 for m in ("L1", "L2", "R")]
+        + [Patch(facecolor=SURFACE, edgecolor=MUTED, linewidth=1.3,
+                 label="целосно скенирање")],
+        loc="upper center", bbox_to_anchor=(0.5, 1.04), ncol=4,
+        frameon=False, fontsize=9, labelcolor=INK_2,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    save(fig, "fig12_model_r_vs_kv")
+
+
+def fig13_best_model_per_db(rows: dict, rel: dict,
+                            databases: list[tuple[str, str]]) -> None:
+    """Слика 13 — секоја база во својот најдобар модел.
+
+    Слика 8 shows every model on every database, which is the honest full
+    picture but not the question a reader actually has. This one asks: if each
+    system is used the way it is meant to be used — the better of L1 and L2 for
+    the key-value stores, the normalized schema for the relational one — which
+    is fastest per query?
+    """
+    kv = [(slug, label) for slug, label in databases if slug != "postgresql"]
+    fig, ax = plt.subplots(figsize=(8.2, 6.0))
+    offsets = lanes(len(kv) + 1, 0.26)
+    left = 0.02
+
+    def best(slug, qid):
+        return min((rows[(slug, qid, m)] for m in ("L1", "L2")),
+                   key=lambda r: r["p50"])
+
+    entries = [(slug, label, (lambda s: lambda q: best(s, q))(slug))
+               for slug, label in kv]
+    entries.append((RELATIONAL, "PostgreSQL (модел R)", lambda q: rel[q]))
+    biggest = max(max(get(f"q{i}")["p50"] for i in range(1, 11))
+                  for _, _, get in entries)
+
+    for qi in range(1, 11):
+        for (slug, _, get), off in zip(entries, offsets):
+            r = get(f"q{qi}")
+            y = qi + off
+            colour = COLORS[slug]
+            if r["scan"]:
+                ax.barh(y, r["p50"] - left, left=left, height=0.22,
+                        facecolor=SURFACE, edgecolor=colour, linewidth=1.1, zorder=2)
+            else:
+                ax.barh(y, r["p50"] - left, left=left, height=0.22,
+                        facecolor=colour, edgecolor="none", zorder=2)
+            ax.text(r["p50"] * 1.25, y, fmt_ms(r["p50"]), va="center", ha="left",
+                    fontsize=7, color=INK_2)
+
+    ax.set_xscale("log")
+    ax.set_xlim(left, biggest * 9)
+    ticks = [t for t in (0.01, 0.1, 1, 10, 100, 1000) if t <= biggest * 9]
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([mk_num(t, 2) for t in ticks], fontsize=8.5)
+    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    ax.set_ylim(10.75, 0.25)
+    ax.set_yticks(range(1, 11))
+    ax.set_yticklabels([f"{i}. {QUERY_LABELS[f'q{i}']}" for i in range(1, 11)],
+                       fontsize=9, color=INK_2)
+    ax.set_xlabel("Латенција p50 (ms, логаритамска скала)", fontsize=9, color=INK_2)
+    strip_chrome(ax, y_grid=False)
+    fig.legend(
+        handles=[Patch(facecolor=COLORS[slug], edgecolor="none",
+                       label=f"{label} (подобриот од L1/L2)" if slug != RELATIONAL
+                       else label)
+                 for slug, label, _ in entries],
+        loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=3,
+        frameon=False, fontsize=9, labelcolor=INK_2,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    save(fig, "fig13_best_model_per_db")
+
+
+def fig14_load_with_r(databases: list[tuple[str, str]]) -> None:
+    """Слика 14 — време на вчитување, со нормализираниот модел како трета група."""
+    groups = ["L1", "L2", "R"]
+    secs = load_times()
+    have = [(slug, label) for slug, label in databases
+            if secs.get((slug, "L1")) is not None]
+    r_secs = secs.get((RELATIONAL, "R"))
+    if not have or r_secs is None:
+        print("  (нема време на вчитување за модел R — изврши "
+              "`python -m common.live_check --model r`; прескокнувам Слика 14)")
+        return
+
+    fig, ax = plt.subplots(figsize=(6.8, 3.6))
+    offsets = lanes(len(have), 0.18)
+    top = max([secs[(s, m)] for s, _ in have for m in ("L1", "L2")] + [r_secs])
+    ax.set_xlim(-0.5, 2.5)
+    ax.set_ylim(0, top * 1.15)
+    for gi, model in enumerate(groups):
+        for (slug, _), off in zip(have, offsets):
+            if model == "R" and slug != "postgresql":
+                continue  # only PostgreSQL has a relational model
+            value = r_secs if model == "R" else secs[(slug, model)]
+            x = gi + off
+            rounded_bar(ax, x, value, 0.11, COLORS[slug])
+            ax.text(x, value + top * 0.022, f"{mk_num(value)} s", ha="center",
+                    va="bottom", fontsize=9, color=INK)
+    ax.set_xticks(range(3))
+    ax.set_xticklabels(["Модел L1", "Модел L2", "Модел R\n(само PostgreSQL)"],
+                       fontsize=10, color=INK_2)
+    ax.set_ylabel("Време на вчитување (секунди)", fontsize=9)
+    strip_chrome(ax)
+    ax.legend(
+        handles=[Line2D([], [], marker="s", linestyle="", markersize=9,
+                        markerfacecolor=COLORS[slug], markeredgecolor="none",
+                        label=label) for slug, label in have],
+        loc="upper right", frameon=False, fontsize=9, labelcolor=INK_2,
+    )
+    save(fig, "fig14_load_with_r")
+
+
+def fig15_concurrency_r(databases: list[tuple[str, str]]) -> None:
+    """Слика 15 — пропусност при 1 / 4 / 16 клиенти, со PostgreSQL во модел R.
+
+    Слика 10 puts all three databases on their key-value models. This one
+    swaps PostgreSQL's series for the relational schema, so every engine is
+    represented by the shape it is actually meant to be used in.
+
+    The y axis is logarithmic. On a linear one the relational series is two
+    orders of magnitude above the other two, which flattens both key-value
+    lines onto the baseline and hides the thing the panel is for — whether
+    each engine gains anything from more clients.
+    """
+    rows, present = [], []
+    for slug, label in databases:
+        source = RELATIONAL if slug == "postgresql" else slug
+        path = RESULTS_DIR / f"concurrency-{source}.csv"
+        if not path.exists():
+            continue
+        present.append((slug, source, label))
+        with open(path, encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                row["threads"] = int(row["threads"])
+                row["throughput_ops_s"] = float(row["throughput_ops_s"])
+                row["_slug"] = slug
+                rows.append(row)
+    if len(present) < 2:
+        print("  (нема доволно concurrency CSV со модел R — прескокнувам Слика 15)")
+        return
+
+    # Wider than the other figures: four panels of three points each read
+    # better side by side than stacked, and this is the one figure meant to
+    # fill a slide rather than a page.
+    fig, axes = plt.subplots(2, 2, figsize=(11.6, 5.3))
+    xpos = {1: 0, 4: 1, 16: 2}
+    for ax, qid in zip(axes.flat, CONCURRENCY_TITLES):
+        series = {}
+        for slug, _, _ in present:
+            pts = sorted((r for r in rows if r["_slug"] == slug and r["query"] == qid),
+                         key=lambda r: r["threads"])
+            xs = [xpos[r["threads"]] for r in pts]
+            ys = [r["throughput_ops_s"] for r in pts]
+            if not xs:
+                continue
+            series[slug] = dict(zip(xs, ys))
+            ax.plot(xs, ys, color=COLORS[slug], linewidth=2, marker="o",
+                    markersize=8, markeredgecolor=SURFACE, markeredgewidth=1.6,
+                    solid_capstyle="round", zorder=3)
+
+        # Only the two ends are labelled — the middle point sits on a straight
+        # run between them and a third number there just adds ink. Within one
+        # column two series can still land close enough to collide, so each
+        # label after the first is nudged down when the gap in log space is
+        # under a tenth of a decade.
+        for x, (dx, ha) in ((0, (-9, "right")), (2, (9, "left"))):
+            column = sorted(((slug, v[x]) for slug, v in series.items() if x in v),
+                            key=lambda p: -p[1])
+            texts = [mk_num(round(y) if y >= 100 else y) for _, y in column]
+            # Oracle 144,4 and FoundationDB 144,1 both round to "144"; two
+            # identical numbers stacked read as a bug rather than as a tie, so
+            # a column that collides keeps a decimal.
+            if len(set(texts)) < len(texts):
+                texts = [mk_num(y, 1) for _, y in column]
+            previous = None
+            for (slug, y), text in zip(column, texts):
+                dy = 0
+                if previous is not None and math.log10(previous / y) < 0.10:
+                    dy = -11
+                previous = y
+                ax.annotate(text, (x, y), textcoords="offset points",
+                            xytext=(dx, dy), ha=ha, va="center",
+                            fontsize=8, color=INK_2)
+
+        ax.set_yscale("log")
+        ax.set_title(CONCURRENCY_TITLES[qid], fontsize=10, color=INK, pad=8)
+        ax.set_xticks(range(3))
+        ax.set_xticklabels(["1", "4", "16"], fontsize=9)
+        ax.set_xlim(-0.75, 2.75)
+        low, high = ax.get_ylim()
+        ax.set_ylim(low / 2.2, high * 2.2)
+        strip_chrome(ax)
+        ax.tick_params(axis="y", labelsize=8)
+
+    for ax in axes[1]:
+        ax.set_xlabel("Конкурентни клиенти", fontsize=9)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Пропусност (барања/s, лог)", fontsize=9)
+    fig.legend(
+        handles=[Line2D([], [], color=COLORS[slug], linewidth=2, marker="o",
+                        markersize=7, markeredgecolor=SURFACE,
+                        label=f"{label} (модел R)" if source == RELATIONAL else label)
+                 for slug, source, label in present],
+        loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=len(present),
+        frameon=False, fontsize=9.5, labelcolor=INK_2,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    save(fig, "fig15_concurrency_r")
+
+
 def main() -> int:
     print("Пишувам графици во", OUT_DIR)
     databases = available()
@@ -533,6 +852,13 @@ def main() -> int:
         fig11_cpus(*cpu)
     else:
         print("  (нема доволно *-cpus{1,4}.csv — прескокнувам Слика 11)")
+
+    rel = load_relational()
+    if rel:
+        fig12_model_r_vs_kv(rows, rel)
+        fig13_best_model_per_db(rows, rel, databases)
+        fig14_load_with_r(databases)
+        fig15_concurrency_r(databases)
     return 0
 
 

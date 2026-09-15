@@ -25,10 +25,11 @@ import argparse
 import os
 import sys
 import time
+from pathlib import Path
 
 from common import keyspec as ks
 from common.apply_schema import detect_database
-from common.dataset import encode, iter_movies
+from common.dataset import GENRE_NAMES, encode, iter_movies
 
 # Probe parameters live in keyspec so live_check and the benchmark ask the
 # identical questions of both databases.
@@ -40,6 +41,34 @@ PROBE_GENRE_B = ks.PROBE_GENRE_B
 
 failures: list[str] = []
 _t0 = time.perf_counter()
+
+#: Where load timings are recorded. bench/plots.py reads this instead of
+#: making someone copy a number out of this script's output into a constant,
+#: which is the kind of step that gets skipped and then silently drops a
+#: series from Слика 7 and Слика 14.
+LOAD_TIMES_PATH = (
+    Path(__file__).resolve().parent.parent / "bench" / "results" / "load-times.json"
+)
+
+
+def record_load(database: str, model: str, seconds: float, rows: int) -> None:
+    """Merge one measured load time into bench/results/load-times.json."""
+    import json
+
+    LOAD_TIMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = json.loads(LOAD_TIMES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = {}
+    existing[f"{database}|{model.upper()}"] = {
+        "seconds": round(seconds, 2),
+        "rows": rows,
+    }
+    LOAD_TIMES_PATH.write_text(
+        json.dumps(existing, indent=1, sort_keys=True), encoding="utf-8"
+    )
+    log(f"   recorded in {LOAD_TIMES_PATH.name}: {database} {model.upper()} "
+        f"= {seconds:.1f} s")
 
 
 def log(message: str = "") -> None:
@@ -529,6 +558,7 @@ def run_postgres(models: list[str], movies: list[dict], exp: dict, skip_load: bo
                 )
                 log(f"   {written / seconds:,.0f} rows/s "
                     f"(5 indexes maintained server-side)")
+                record_load("postgresql", "L1", seconds, written)
                 check(written == len(movies), f"{len(movies):,} rows written")
 
             log("L1 — read back")
@@ -663,6 +693,7 @@ def run_postgres(models: list[str], movies: list[dict], exp: dict, skip_load: bo
                 seconds = time.perf_counter() - start
                 log(f"   inserted {written:,} rows: {seconds:.1f} s  "
                     f"({written / seconds:,.0f} rows/s)")
+                record_load("postgresql", "L2", seconds, written)
                 check(written == len(rows), f"{len(rows):,} rows written (got {written:,})")
 
             log("L2 — read back")
@@ -728,12 +759,136 @@ def run_postgres(models: list[str], movies: list[dict], exp: dict, skip_load: bo
                   f"Q6 precomputed top-{ks.TOP_K} matches L1's ordering")
             log()
 
+        if "r" in models:
+            log("R — load")
+            genre_rows = sorted(GENRE_NAMES.items())
+            lang_rows = sorted({m["original_language"] for m in movies
+                                if m.get("original_language")})
+            movie_rows = [
+                (m["id"], m["id_imdb"], m["title"], m.get("original_title"),
+                 m.get("original_language"), m.get("release_date") or None,
+                 m.get("overview"), m["popularity"], m["vote_average"],
+                 m["vote_count"], m["adult"], m["video"],
+                 m.get("poster_path"), m.get("backdrop_path"))
+                for m in movies
+            ]
+            pair_rows = [(m["id"], g) for m in movies for g in m["genre_ids"]]
+
+            if not skip_load:
+                start = time.perf_counter()
+                # Parents before children, or the foreign keys reject the rows.
+                written = insert_batched(
+                    "INSERT INTO genres (genre_id, name) VALUES (%s,%s) "
+                    "ON CONFLICT (genre_id) DO UPDATE SET name = EXCLUDED.name",
+                    genre_rows)
+                written += insert_batched(
+                    "INSERT INTO languages (lang_code) VALUES (%s) "
+                    "ON CONFLICT DO NOTHING", [(c,) for c in lang_rows])
+                written += insert_batched(
+                    "INSERT INTO movies (id, id_imdb, title, original_title, "
+                    "lang_code, release_date, overview, popularity, "
+                    "vote_average, vote_count, adult, video, poster_path, "
+                    "backdrop_path) VALUES "
+                    "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title",
+                    movie_rows)
+                written += insert_batched(
+                    "INSERT INTO movie_genres (movie_id, genre_id) VALUES (%s,%s) "
+                    "ON CONFLICT DO NOTHING", pair_rows)
+                seconds = time.perf_counter() - start
+                log(f"   inserted {written:,} rows: {seconds:.1f} s  "
+                    f"({written / seconds:,.0f} rows/s)")
+                record_load("postgresql-relational", "R", seconds, written)
+                expected = len(genre_rows) + len(lang_rows) + len(movie_rows) + len(pair_rows)
+                check(written == expected,
+                      f"{expected:,} rows written across four tables",
+                      f"got {written:,}")
+
+                # Model R is the only one of the three whose access paths are
+                # chosen by a planner, and a planner with no statistics guesses.
+                # Straight after a bulk load autovacuum has not run yet, so
+                # without this the first benchmark measures PostgreSQL working
+                # from default estimates — which is neither its real behaviour
+                # nor reproducible.
+                with conn.cursor() as cur:
+                    cur.execute("ANALYZE genres, languages, movies, movie_genres")
+                conn.commit()
+                log("   ANALYZE done — the planner has statistics")
+
+            log("R — read back")
+            for table, want in (("genres", len(genre_rows)),
+                                ("languages", len(lang_rows)),
+                                ("movies", len(movie_rows)),
+                                ("movie_genres", len(pair_rows))):
+                got_n = scalar(f"SELECT count(*) FROM {table}")
+                check(got_n == want, f"{table} row count", f"{got_n:,} == {want:,}")
+
+            probe = exp["probe"]
+            row = query("SELECT title, year, lang_code FROM movies WHERE id = %s",
+                        (probe["id"],))
+            check(len(row) == 1 and row[0][0] == probe["title"],
+                  "Q1 point lookup by primary key", probe["title"])
+            # The generated column derives `year` from release_date inside the
+            # database. If PostgreSQL and common.dataset.derive_year disagree
+            # about any record, every year-based count below diverges, so it is
+            # worth checking on the probe before trusting the aggregates.
+            check(row and row[0][1] == probe.get("year"),
+                  "generated `year` matches derive_year()",
+                  f"{row[0][1]} == {probe.get('year')}")
+
+            got = scalar("SELECT id FROM movies WHERE id_imdb = %s", (probe["id_imdb"],))
+            check(got == probe["id"], "Q2 unique constraint on id_imdb resolves the "
+                  "alternate key", probe["id_imdb"])
+
+            n = scalar("SELECT count(*) FROM movies WHERE year = %s", (PROBE_YEAR,))
+            check(n == exp["n_year"], f"Q3 year {PROBE_YEAR}",
+                  f"{n:,} == {exp['n_year']:,}")
+
+            n = scalar("SELECT count(*) FROM movies WHERE lang_code = %s "
+                       "AND vote_count > %s", (PROBE_LANG, PROBE_VOTES))
+            check(n == exp["n_lang_votes"], "Q4 language + vote floor",
+                  f"{n:,} == {exp['n_lang_votes']:,}")
+
+            n = scalar("SELECT count(*) FROM movie_genres WHERE genre_id = %s",
+                       (PROBE_GENRE,))
+            check(n == exp["n_genre"], "Q5 genre membership via the junction table",
+                  f"{n:,} == {exp['n_genre']:,}")
+
+            # The two-genre intersection is a self-join on movie_genres — the
+            # thing the JSONB models had to do with two containment lookups.
+            n = scalar("SELECT count(*) FROM movie_genres a JOIN movie_genres b "
+                       "USING (movie_id) WHERE a.genre_id = %s AND b.genre_id = %s",
+                       (PROBE_GENRE, PROBE_GENRE_B))
+            check(n == exp["n_both_genres"], "Q5 two-genre intersection (self-join)",
+                  f"{n:,} == {exp['n_both_genres']:,}")
+
+            rows_ = query(
+                "SELECT m.id FROM movies m JOIN movie_genres mg ON mg.movie_id = m.id "
+                "WHERE mg.genre_id = %s ORDER BY m.popularity DESC, m.id LIMIT %s",
+                (PROBE_GENRE, ks.TOP_K))
+            got = [r[0] for r in rows_]
+            check(got == exp["top_ids"],
+                  f"Q6 top-{ks.TOP_K} — the index family L1 could not express",
+                  f"{len(got)} ids")
+
+            rows_ = query(
+                "SELECT mg.genre_id, m.year, count(*), avg(m.vote_average) "
+                "FROM movies m JOIN movie_genres mg ON mg.movie_id = m.id "
+                "WHERE m.year BETWEEN %s AND %s GROUP BY 1, 2",
+                (min(ks.REPORT_YEARS), max(ks.REPORT_YEARS)))
+            want = {(g, y): row for (g, y), row in exp["agg"]["genre_year"].items()
+                    if y in ks.REPORT_YEARS}
+            check(len(rows_) == len(want),
+                  "Q8 genre x year as a join + GROUP BY, one statement",
+                  f"{len(rows_)} == {len(want)} rows")
+            log()
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Load the full corpus into L1/L2 and verify every key family."
     )
-    parser.add_argument("--model", action="append", choices=("l1", "l2"))
+    parser.add_argument("--model", action="append", choices=("l1", "l2", "r"))
     parser.add_argument("--db", choices=("oracle", "fdb", "postgres"))
     parser.add_argument("--skip-load", action="store_true", help="verify without reloading")
     args = parser.parse_args(argv)

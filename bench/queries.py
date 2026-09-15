@@ -478,6 +478,140 @@ class OracleBackend(Backend):
 
 
 # ==========================================================================
+# PostgreSQL, model R — the relational control used relationally
+# ==========================================================================
+
+
+class RelationalBackend(Backend):
+    """The same ten questions against a third-normal-form schema.
+
+    ``PostgresBackend`` asks PostgreSQL to imitate a key-value store: one JSONB
+    document per key, reached through expression indexes. This class asks it to
+    be what it is. The corpus is split across ``movies``, ``genres``,
+    ``languages`` and the ``movie_genres`` junction table, every field is a
+    typed column, and the queries are ordinary SQL with joins.
+
+    There is only one model here, not two. L1 and L2 are two ways of keying a
+    key-value store, and the distinction does not survive normalization —
+    3NF *is* the aggregation level. So this backend reports a single model, R,
+    and the harness benchmarks it against the other five (database, model)
+    pairs rather than against a sibling of its own.
+
+    Correctness is checked the same way everything else is: ``bench/answers.py``
+    compares these answers against the other databases and against the
+    brute-force computation over ``data/``.
+    """
+
+    name = "postgresql-relational"
+    MODELS = ("r",)
+
+    def __init__(self):
+        import psycopg
+
+        self.conn = psycopg.connect(
+            os.environ.get("PG_DSN", "postgresql://nbp:nbp@pg:5432/tmdb"),
+            autocommit=True,
+        )
+        self.server_version = self.conn.execute("SHOW server_version").fetchone()[0]
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def rows(self, statement: str, params: tuple = ()) -> list[tuple]:
+        with self.conn.cursor() as cur:
+            cur.execute(statement, params, prepare=True)
+            return cur.fetchall()
+
+    def scalar(self, statement: str, params: tuple = ()):
+        rows = self.rows(statement, params)
+        return rows[0][0] if rows else None
+
+    # -- R -----------------------------------------------------------------
+
+    def r_q1(self):
+        return self.scalar("SELECT title FROM movies WHERE id = %s", (self.probe_id,))
+
+    def r_q2(self):
+        return self.scalar("SELECT id FROM movies WHERE id_imdb = %s", (self.probe_imdb,))
+
+    def r_q3(self):
+        return self.scalar("SELECT count(*) FROM movies WHERE year = %s",
+                           (ks.PROBE_YEAR,))
+
+    def r_q4(self):
+        return self.scalar(
+            "SELECT count(*) FROM movies WHERE lang_code = %s AND vote_count > %s",
+            (ks.PROBE_LANG, ks.PROBE_VOTES),
+        )
+
+    def r_q5(self):
+        # A self-join on the junction table. The JSONB models did this with two
+        # containment lookups the planner intersected; FoundationDB did it by
+        # scanning two key ranges and intersecting in Python.
+        return self.scalar(
+            "SELECT count(*) FROM movie_genres a JOIN movie_genres b USING (movie_id) "
+            "WHERE a.genre_id = %s AND b.genre_id = %s",
+            (ks.PROBE_GENRE, ks.PROBE_GENRE_B),
+        )
+
+    def r_q6(self):
+        # The access path L1 could not express at all: genre *and* popularity
+        # order. Normalized, the pair is two columns in two indexed tables, so
+        # the planner has a real choice to make. Which one it takes is in
+        # docs/postgres-plans-r.txt.
+        return [
+            r[0]
+            for r in self.rows(
+                "SELECT m.id FROM movies m JOIN movie_genres mg ON mg.movie_id = m.id "
+                "WHERE mg.genre_id = %s ORDER BY m.popularity DESC, m.id LIMIT %s",
+                (ks.PROBE_GENRE, ks.TOP_K),
+            )
+        ]
+
+    def r_q7(self):
+        # L1's documented weak spot needs no special handling here: the
+        # composite (lang_code, vote_count) index covers the language, and the
+        # year range filters on a typed column.
+        return self.scalar(
+            "SELECT count(*) FROM movies WHERE lang_code = %s "
+            "AND year BETWEEN %s AND %s AND id <> %s",
+            (self.probe_lang, self.probe_year - 1, self.probe_year + 1, self.probe_id),
+        )
+
+    def r_q8(self):
+        return sorted(
+            [g, y, n, a]
+            for g, y, n, a in self.rows(
+                "SELECT mg.genre_id, m.year, count(*), avg(m.vote_average) "
+                "FROM movies m JOIN movie_genres mg ON mg.movie_id = m.id "
+                "WHERE m.year BETWEEN %s AND %s GROUP BY 1, 2",
+                (YEARS[0], YEARS[-1]),
+            )
+        )
+
+    def r_q9(self):
+        # coalesce because a film with no original_language is stored as NULL,
+        # and the reference implementation buckets those under the empty string.
+        return top_languages(
+            self.rows(
+                "SELECT coalesce(lang_code, ''), count(*), avg(popularity) "
+                "FROM movies GROUP BY 1"
+            )
+        )
+
+    def r_q10(self):
+        return sorted(
+            [y, n, p, a]
+            for y, n, p, a in self.rows(
+                "SELECT year, count(*), avg(popularity), "
+                "coalesce(avg(vote_average) FILTER (WHERE vote_count >= %s), 0.0) "
+                "FROM movies WHERE year BETWEEN %s AND %s GROUP BY 1",
+                (ks.MIN_VOTE_COUNT, YEARS[0], YEARS[-1]),
+            )
+        )
+
+
+# ==========================================================================
 # PostgreSQL — the relational control
 # ==========================================================================
 

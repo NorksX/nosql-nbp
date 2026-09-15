@@ -48,18 +48,23 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[max(index, 0)]
 
 
-def make_backend():
+def make_backend(database: str | None = None):
     # Imported lazily so the parent process never initializes a client
     # library — the FDB network thread must not exist before fork(), and a
     # psycopg connection must never be inherited across one either.
     from bench.harness import BACKENDS
     from common.apply_schema import detect_database
 
-    return BACKENDS[detect_database()]()
+    return BACKENDS[detect_database(database)]()
 
 
-def worker(qid: str, model: str, barrier, queue) -> None:
-    backend = make_backend()
+def worker(qid: str, model: str, barrier, queue, database=None) -> None:
+    backend = make_backend(database)
+    # A single-model backend (the relational one) has no L1/L2 to select
+    # between, so every target runs against the model it does have.
+    models = getattr(backend, "MODELS", ("l1", "l2"))
+    if len(models) == 1:
+        model = models[0]
     warm_end = time.perf_counter() + WARMUP_S
     while time.perf_counter() < warm_end:
         backend.run(model, qid)
@@ -74,12 +79,12 @@ def worker(qid: str, model: str, barrier, queue) -> None:
     backend.close()
 
 
-def sweep(qid: str, model: str, threads: int) -> dict:
+def sweep(qid: str, model: str, threads: int, database=None) -> dict:
     ctx = mp.get_context("fork" if sys.platform != "win32" else "spawn")
     barrier = ctx.Barrier(threads)
     queue = ctx.Queue()
     procs = [
-        ctx.Process(target=worker, args=(qid, model, barrier, queue))
+        ctx.Process(target=worker, args=(qid, model, barrier, queue, database))
         for _ in range(threads)
     ]
     for p in procs:
@@ -105,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="1/4/16-client concurrency sweep.")
     parser.add_argument("--only", help="comma-separated query ids, e.g. q1,q6")
     parser.add_argument("--tag", help="suffix for the output file, e.g. cpus1")
+    parser.add_argument("--db", help="override the database detected from the "
+                        "environment; use postgres-r for the relational model")
     args = parser.parse_args(argv)
     wanted = set(args.only.split(",")) if args.only else None
 
@@ -113,16 +120,20 @@ def main(argv: list[str] | None = None) -> int:
     from bench.harness import BACKENDS
     from common.apply_schema import detect_database
 
-    database = BACKENDS[detect_database()].name
+    resolved = detect_database(args.db)
+    database = BACKENDS[resolved].name
+    model_of = getattr(BACKENDS[resolved], "MODELS", None)
     print(f"database: {database}")
 
     rows = []
     for qid, model, description in TARGETS:
         if wanted and qid not in wanted:
             continue
+        if model_of and len(model_of) == 1:
+            model = model_of[0]
         print(f"\n{qid} {model.upper()}  {description}")
         for threads in THREAD_LEVELS:
-            stats = sweep(qid, model, threads)
+            stats = sweep(qid, model, threads, args.db)
             rows.append({
                 "database": database,
                 "query": qid,

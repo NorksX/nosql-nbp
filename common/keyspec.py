@@ -650,3 +650,93 @@ POSTGRES_L2_DDL = (
 
 # Same rule as Oracle NoSQL: no secondary indexes on L2, deliberately.
 POSTGRES_L2_INDEX_DDL: tuple[str, ...] = ()
+
+
+# ==========================================================================
+# Model R — the relational control, done properly
+# ==========================================================================
+
+# L1 and L2 ask PostgreSQL to behave like a key-value store: one JSONB blob per
+# key, indexed through expressions. That answers "how does a relational engine
+# cope with a key-value model", which is a fair question but not the obvious
+# one. Model R answers the obvious one: given the same 109,222 movies, what
+# does a normalized relational schema cost?
+#
+# So R is third normal form. The document is taken apart into typed columns,
+# the repeating genre list becomes a junction table, and the two lookup values
+# that repeat across rows — genre and language — become their own entities.
+# Nothing is stored twice and nothing is derived twice.
+#
+#   genres(genre_id)            19 rows      the 19 ids that occur
+#   languages(lang_code)       137 rows
+#   movies(id)             109,222 rows      one row per film, typed columns
+#   movie_genres(movie_id,
+#                genre_id)  149,484 rows     the many-to-many
+#                          ---------
+#                            258,862 rows total
+#
+# Against L1's 730,414 keys and L2's 1,867. The three models therefore span
+# two and a half orders of magnitude in how finely the same corpus is cut up,
+# which is the axis the whole study is about.
+#
+# What R can express that L1-on-JSONB could not: `idx_genre_pop`. In L1 the
+# genre list lives inside a JSON array, and no B-tree can be built over "each
+# element of this array paired with this scalar". Here the pair is two real
+# columns in two real tables, so the planner can join movie_genres to movies
+# and walk an ordered index. Whether it actually beats FoundationDB's
+# order-in-the-key is a question for the measurement, not for this comment.
+
+POSTGRES_R_TABLES = ("movie_genres", "movies", "languages", "genres")
+
+POSTGRES_R_DDL = (
+    """CREATE TABLE IF NOT EXISTS genres (
+         genre_id SMALLINT PRIMARY KEY,
+         name     TEXT NOT NULL UNIQUE
+       )""",
+    """CREATE TABLE IF NOT EXISTS languages (
+         lang_code TEXT PRIMARY KEY
+       )""",
+    # release_date is the fact; `year` is derived from it and declared as
+    # derived, so it cannot drift out of step the way a loader-maintained
+    # column can. The 5,442 films with no release date get NULL in both, which
+    # is the honest relational reading of "unknown" and matches L1, where those
+    # records get no entry in the year index either.
+    """CREATE TABLE IF NOT EXISTS movies (
+         id             INTEGER PRIMARY KEY,
+         id_imdb        TEXT NOT NULL UNIQUE,
+         title          TEXT NOT NULL,
+         original_title TEXT,
+         lang_code      TEXT REFERENCES languages(lang_code),
+         release_date   DATE,
+         year           SMALLINT GENERATED ALWAYS AS
+                          (EXTRACT(YEAR FROM release_date)::smallint) STORED,
+         overview       TEXT,
+         popularity     DOUBLE PRECISION NOT NULL,
+         vote_average   DOUBLE PRECISION NOT NULL,
+         vote_count     INTEGER NOT NULL,
+         adult          BOOLEAN NOT NULL,
+         video          BOOLEAN NOT NULL,
+         poster_path    TEXT,
+         backdrop_path  TEXT
+       )""",
+    """CREATE TABLE IF NOT EXISTS movie_genres (
+         movie_id INTEGER  NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+         genre_id SMALLINT NOT NULL REFERENCES genres(genre_id),
+         PRIMARY KEY (movie_id, genre_id)
+       )""",
+)
+
+# The same five access paths L1 provides, expressed relationally. Four are
+# ordinary B-trees over typed columns instead of over JSON expressions. The
+# fifth — genre together with popularity — is the one L1 could not express at
+# all; here it is a join between two indexed tables.
+#
+# movie_genres carries its primary key (movie_id, genre_id), which answers
+# "which genres does this film have"; the extra index inverts it to answer
+# "which films are in this genre", which is what queries 5, 6 and 8 need.
+POSTGRES_R_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS r_idx_year ON movies (year)",
+    "CREATE INDEX IF NOT EXISTS r_idx_lang_votes ON movies (lang_code, vote_count)",
+    "CREATE INDEX IF NOT EXISTS r_idx_pop ON movies (popularity DESC, id)",
+    "CREATE INDEX IF NOT EXISTS r_idx_mg_genre ON movie_genres (genre_id, movie_id)",
+)

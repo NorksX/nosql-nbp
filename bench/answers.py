@@ -8,8 +8,9 @@
 ``bench/harness.py`` already refuses to time a query whose L1 and L2 results
 disagree, but that check is local to one database: it cannot see that Oracle
 NoSQL and PostgreSQL returned different numbers for the same question. With
-three databases and two models there are six implementations of every query,
-and the whole comparison rests on all six answering the same thing.
+three databases, two key-value models and PostgreSQL's relational model R there
+are seven implementations of every query, and the whole comparison rests on all
+seven answering the same thing.
 
 So each database writes its canonical answers to
 ``bench/results/answers-<database>.json``, and ``--compare`` checks every file
@@ -38,11 +39,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 def collect(database: str) -> dict:
     backend = BACKENDS[database]()
+    models = getattr(backend, "MODELS", ("l1", "l2"))
     answers: dict[str, dict] = {}
     try:
         for qid, _, description, _, _ in QUERIES:
             answers[qid] = {}
-            for model in ("l1", "l2"):
+            for model in models:
                 answers[qid][model.upper()] = backend.run(model, qid)
             print(f"   {qid:>3}  {description}")
     finally:
@@ -90,8 +92,8 @@ def compare() -> int:
         verdicts = []
         reference = None
         for source in sources:
-            for model in ("L1", "L2"):
-                value = source["answers"].get(qid, {}).get(model)
+            for model in sorted(source["answers"].get(qid, {})):
+                value = source["answers"][qid][model]
                 if value is None:
                     continue
                 if reference is None:
@@ -107,8 +109,9 @@ def compare() -> int:
             for v in verdicts:
                 print(f"            {v}")
         else:
-            n = sum(1 for s in sources for m in ("L1", "L2")
-                    if s["answers"].get(qid, {}).get(m) is not None)
+            n = sum(1 for s in sources
+                    for m in s["answers"].get(qid, {})
+                    if s["answers"][qid][m] is not None)
             print(f"ok        {qid:>3}  {description}  ({n} implementations agree)")
 
     if disagreements:

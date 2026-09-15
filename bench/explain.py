@@ -1,6 +1,7 @@
 """Capture the query plan for every PostgreSQL query, on both models.
 
     docker exec pg-client python -m bench.explain            > docs/postgres-plans.txt
+    docker exec pg-client python -m bench.explain --schema r > docs/postgres-plans-r.txt
     docker exec pg-client python -m bench.explain --only q6
 
 `docs/schema-comparison.md §6` lists "query 6's cause is inferred, not
@@ -29,37 +30,52 @@ import argparse
 import sys
 
 from bench.harness import QUERIES
-from bench.queries import PostgresBackend
+from bench.queries import PostgresBackend, RelationalBackend
 
 EXPLAIN = "EXPLAIN (ANALYZE, VERBOSE off, COSTS off, BUFFERS, TIMING on) "
 
 
-class ExplainBackend(PostgresBackend):
-    """PostgresBackend with every statement routed through EXPLAIN ANALYZE."""
+def explaining(base):
+    """Wrap a backend class so every statement runs through EXPLAIN ANALYZE.
 
-    def __init__(self):
-        super().__init__()
-        self.captured: list[tuple[str, str]] = []
+    Works for both PostgreSQL backends because they share the same two
+    primitives, `rows` and `scalar`. What gets explained is therefore exactly
+    what gets benchmarked, for the key-value models and the relational one
+    alike.
+    """
 
-    def rows(self, statement: str, params: tuple = ()):
-        with self.conn.cursor() as cur:
-            cur.execute(EXPLAIN + statement, params)
-            plan = "\n".join(row[0] for row in cur.fetchall())
-        self.captured.append((" ".join(statement.split()), plan))
-        return []
+    class Explaining(base):
+        def __init__(self):
+            super().__init__()
+            self.captured: list[tuple[str, str]] = []
 
-    def scalar(self, statement: str, params: tuple = ()):
-        self.rows(statement, params)
-        return None
+        def rows(self, statement: str, params: tuple = ()):
+            with self.conn.cursor() as cur:
+                cur.execute(EXPLAIN + statement, params)
+                plan = "\n".join(row[0] for row in cur.fetchall())
+            self.captured.append((" ".join(statement.split()), plan))
+            return []
+
+        def scalar(self, statement: str, params: tuple = ()):
+            self.rows(statement, params)
+            return None
+
+    Explaining.__name__ = f"Explaining{base.__name__}"
+    return Explaining
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="EXPLAIN ANALYZE every query.")
     parser.add_argument("--only", help="comma-separated query ids, e.g. q6,q8")
+    parser.add_argument("--schema", choices=("kv", "r"), default="kv",
+                        help="kv = the L1/L2 JSONB models (default); "
+                             "r = the normalized relational model")
     args = parser.parse_args(argv)
     wanted = set(args.only.split(",")) if args.only else None
 
-    backend = ExplainBackend()
+    backend = explaining(PostgresBackend if args.schema == "kv"
+                         else RelationalBackend)()
+    models = getattr(backend, "MODELS", ("l1", "l2"))
     print("# PostgreSQL query plans")
     print(f"# server_version {backend.server_version}")
     print("#")
@@ -71,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
             if wanted and qid not in wanted:
                 continue
             print(f"\n{'=' * 78}\n{qid.upper()}  {description}  [{category}]\n{'=' * 78}")
-            for model in ("l1", "l2"):
+            for model in models:
                 backend.captured.clear()
                 backend.run(model, qid)
                 for statement, plan in backend.captured:

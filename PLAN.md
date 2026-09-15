@@ -19,10 +19,32 @@
 > comparison of Oracle NoSQL against FoundationDB can only say which of the two
 > is faster. With a baseline it can say whether the choice mattered at all.
 >
-> It is deliberately *not* given a normalized relational schema — no `movies`
-> table of typed columns, no `movie_genres` junction table. That would be a third
-> data model and would answer a different question. One dataset, two aggregation
-> levels, three engines.
+> **Scope extension, 2026-09-15 — model R, the structured arm.** The control above
+> was first built *without* a normalized relational schema, on the reasoning that a
+> third data model would answer a different question. That reasoning was right that
+> it is a different question and wrong that the question should be left unasked:
+> without it the study can say which engine is faster on a key-value model, but
+> nothing about whether a key-value model was the right shape for this data in the
+> first place.
+>
+> So PostgreSQL now also carries **model R** — third normal form, typed columns, a
+> `movie_genres` junction table, no JSON at all (`POSTGRES_R_DDL` in
+> `common/keyspec.py`, `PostgresRelationalBackend` in `bench/queries.py`). Same ten
+> queries, same semantics, same harness, and checked by the same
+> `python -m bench.answers --compare` as everything else. It was measured on
+> 2026-09-15, in its own sitting — say so wherever an R number stands beside a
+> key-value one.
+>
+> **The thesis is therefore a two-axis comparison: two aggregation models over
+> unstructured data in two key-value stores, set against structured data in a
+> relational one.** Every result belongs to one axis or the other:
+>
+> - *Does the aggregation model matter?* L1 against L2, inside one database.
+> - *Does the storage paradigm matter?* Unstructured key-value against structured
+>   relational, on identical data and identical query semantics.
+>
+> One dataset, three aggregation levels — L1 at 730,414 keys, L2 at 1,867 keys, R at
+> 258,862 rows across four tables — and three engines.
 >
 > Adding the control meant **re-measuring all three databases on one machine in
 > one sitting** (macOS 15 / Apple Silicon, 2026-09-13). The earlier Oracle NoSQL
@@ -607,18 +629,18 @@ L1 costs 31 % more space, almost all of it index keys, and writes ~390× more ke
 
 ## Phase 3 — КОРИСТЕЊЕ НА ПОДАТОЦИТЕ
 
-> **Status: all ten queries are implemented six times** — L1 and L2, on each of the three
-> databases — in `bench/queries.py`, and all six implementations of every query return the
-> same answer. ⬜ `common/queries.md` (the DB-agnostic write-up, with captured output and
+> **Status: all ten queries are implemented seven times** — L1 and L2 on each of the three
+> databases, plus model R on PostgreSQL — in `bench/queries.py`, and all seven
+> implementations of every query return the same answer. ⬜ `common/queries.md` (the DB-agnostic write-up, with captured output and
 > per-query limitations) is still to write; the implementations and the measured results
 > in [docs/schema-comparison.md](docs/schema-comparison.md) are the raw material for it.
 >
 > **How "the same answer" is now checked.** `bench/harness.py` refuses to time a query
 > whose L1 and L2 results disagree, but that gate is local to one database — it cannot see
-> that Oracle NoSQL and PostgreSQL returned different numbers. With three databases there
-> are six implementations per query, so `bench/answers.py` writes each database's canonical
-> answers to `bench/results/answers-<db>.json` and compares every file against every other
-> *and* against `DatasetBackend` — a seventh implementation that computes the answers
+> that Oracle NoSQL and PostgreSQL returned different numbers. Across the three databases
+> there are seven implementations per query, so `bench/answers.py` writes each database's
+> canonical answers to `bench/results/answers-<db>.json` and compares every file against
+> every other *and* against `DatasetBackend` — an eighth implementation that computes the answers
 > straight from `data/` by brute force, with no database involved at all. That brute-force
 > version is the only one in the project that cannot be wrong for an interesting reason,
 > which is what makes it the reference.

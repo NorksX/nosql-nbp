@@ -26,6 +26,10 @@ ALL_DATABASES = [
 ]
 QUERIES = [f"q{i}" for i in range(1, 11)]
 
+#: The relational model lives in its own CSV: one model, not two, so it does
+#: not fit the L1/L2 column pairs the tables above are built from.
+RELATIONAL = "postgresql-relational"
+
 
 def load() -> tuple[dict, list[tuple[str, str]]]:
     rows: dict = {}
@@ -46,6 +50,23 @@ def load() -> tuple[dict, list[tuple[str, str]]]:
     if len(present) < 2:
         sys.exit("need at least two databases' results to compare")
     return rows, present
+
+
+def load_relational() -> dict | None:
+    """Model R's per-query rows, or None when it has not been benchmarked."""
+    path = RESULTS_DIR / f"{RELATIONAL}.csv"
+    if not path.exists():
+        print(f"<!-- no {RELATIONAL}.csv — skipping the model R table -->",
+              file=sys.stderr)
+        return None
+    out = {}
+    with open(path, encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            row["p50_ms"] = float(row["p50_ms"])
+            row["p95_ms"] = float(row["p95_ms"])
+            row["scan"] = row["full_scan"] == "True"
+            out[row["query"]] = row
+    return out
 
 
 def ms(row: dict) -> str:
@@ -117,6 +138,30 @@ def main() -> int:
                 if min(databases, key=lambda d: rows[(d[0], qid, model)]["p50_ms"])[0] == slug
             ]
             print(f"| {label} | {model} | {', '.join(won) if won else '—'} |")
+
+    relational = load_relational()
+    if relational:
+        print("\n### Model R — the normalized relational schema\n")
+        print("Each key-value store at its best (the faster of L1 and L2) against "
+              "PostgreSQL used relationally.\n")
+        cols = " | ".join(label for _, label in databases if label != "PostgreSQL")
+        print(f"| # | Query | {cols} | PostgreSQL R | Fastest |")
+        print("|---|---|--:|--:|--:|---|")
+        for qid in QUERIES:
+            best = []
+            for slug, label in databases:
+                if slug == "postgresql":
+                    continue
+                pick = min((rows[(slug, qid, m)] for m in ("L1", "L2")),
+                           key=lambda r: r["p50_ms"])
+                best.append((label, pick))
+            r = relational[qid]
+            cells = " | ".join(ms(row) for _, row in best)
+            contenders = best + [("PostgreSQL R", r)]
+            winner = min(contenders, key=lambda c: c[1]["p50_ms"])[0]
+            print(f"| {qid.upper()[1:]} | {rows[(databases[0][0], qid, 'L1')]['description']} "
+                  f"| {cells} | {ms(r)} | {short(winner)} |")
+        print("\nᶠ = no index path; the query reads the whole corpus.")
 
     print("\n### Tail behaviour (p95 / p50)\n")
     worst = sorted(

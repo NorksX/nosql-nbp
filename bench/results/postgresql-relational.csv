@@ -1,0 +1,11 @@
+database,query,category,description,model,full_scan,n,p50_ms,p95_ms,p99_ms,mean_ms,min_ms
+postgresql-relational,q1,simple,Point lookup by TMDB id,R,False,200,0.047,0.073,0.137,0.054,0.037
+postgresql-relational,q2,simple,Lookup by IMDb id (alternate key),R,False,200,0.047,0.062,0.066,0.05,0.044
+postgresql-relational,q3,simple,All movies of year 2017,R,False,50,0.222,0.288,0.45,0.232,0.21
+postgresql-relational,q4,simple,Language 'en' with vote_count > 500,R,False,50,0.315,1.613,3.387,0.533,0.141
+postgresql-relational,q5,complex,Movies in both Drama and Horror,R,False,20,1.592,2.444,2.444,1.649,1.529
+postgresql-relational,q6,complex,Top 20 of Drama by popularity,R,False,50,0.12,0.143,0.167,0.125,0.117
+postgresql-relational,q7,complex,"Same language, +/-1 year of Ad Astra",R,False,20,2.105,2.832,2.832,2.169,1.35
+postgresql-relational,q8,aggregate,"Avg rating & count per genre per year, 2000-2020",R,True,3,17.899,18.852,18.852,18.171,17.763
+postgresql-relational,q9,aggregate,"Top 10 languages by count, mean popularity",R,True,3,8.43,9.172,9.172,8.648,8.341
+postgresql-relational,q10,aggregate,"Yearly trend, vote_count >= 50",R,True,3,8.142,8.156,8.156,8.054,7.864

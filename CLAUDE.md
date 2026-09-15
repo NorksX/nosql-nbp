@@ -11,19 +11,32 @@ years): two key-value NoSQL stores — **Oracle NoSQL Database CE** (sub-team A)
 by the team to give the two key-value stores a baseline to be measured against. The
 deliverable is an елаборат (report) plus benchmarks, not a shipped application.
 
-PostgreSQL is a *control*, not a third contender: same two models, same ten queries, same
-harness, and deliberately **no** normalized relational schema. It is there to answer whether
-the key-value stores bought anything over a relational baseline on this data.
+**The thesis is a two-axis comparison: two aggregation models over unstructured data in two
+key-value stores, set against structured data in a relational one.** The same 109,222 records
+are keyed two ways — L1 fine-grained, L2 coarse-grained — in Oracle NoSQL and FoundationDB.
+PostgreSQL carries both of those in JSONB *and* model R, a normalized 3NF schema of typed
+columns. So there are two separate questions, and every result belongs to one of them:
+
+- *Does the aggregation model matter?* L1 against L2, inside one database.
+- *Does the storage paradigm matter?* Unstructured key-value against structured relational,
+  on identical data and identical query semantics.
+
+PostgreSQL's L1/L2 are the control for the second question — a relational engine asked to
+behave like a key-value store. Model R is the same engine allowed to be itself.
 
 **`PLAN.md` is the source of truth.** It carries the phase plan, verified dataset facts,
 key-space designs (L1/L2), the 10 query definitions, and the benchmark protocol. Read it
 before doing substantive work; update its status markers when a phase advances.
 
-Phases 1–4 are done for all three databases. The stacks are up, both schemas load and
-verify, all ten queries are implemented on L1 and L2 in every database (`bench/queries.py`),
-and the full Phase 4 sweep — latency, concurrency, and 1-vs-4 CPUs — was measured on
+Phases 1–4 are done for all three databases. The stacks are up, every schema loads and
+verifies, and all ten queries are implemented on all seven (database, model) pairs — L1 and L2
+in each of the three databases, plus model R in PostgreSQL (`bench/queries.py`). The full
+Phase 4 sweep — latency, concurrency, and 1-vs-4 CPUs — was measured on
 **2026-09-13, all three databases on one machine in one sitting** (macOS 15 / Apple Silicon).
-Results in `bench/results/*.csv`, analysis in [docs/schema-comparison.md](docs/schema-comparison.md).
+**Model R was measured separately on 2026-09-15**, so say which sitting a number comes from
+wherever an R figure stands beside a key-value one. Results in `bench/results/*.csv`, analysis
+in [docs/schema-comparison.md](docs/schema-comparison.md), combined tables in
+`bench/results/report-with-r.md`.
 
 Headline: PostgreSQL was fastest on all twenty query/model combinations, so at this scale
 the key-value stores bought nothing measurable — with three real qualifications recorded in
@@ -53,7 +66,7 @@ docker compose exec client python docker/postgres/smoke_test.py       # from doc
 There is no build, lint, or unit-test suite. Verification is the smoke tests, the checklists
 in `docker/*/README.md`, `python -m common.verify_schemas` (offline), `common.live_check`
 (per database), and `python -m bench.answers --compare`, which checks that every
-implementation of every query — six of them, plus a brute-force one computed straight from
+implementation of every query — seven of them, plus a brute-force one computed straight from
 `data/` — returns the same answer.
 
 The client container names are `kv-client`, `fdb-client` and `pg-client`.

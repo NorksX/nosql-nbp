@@ -631,12 +631,19 @@ three-database runbook is in `PLAN.md §Phase 4`.
 PostgreSQL stores the same 109,222 records in the same two models, answers the
 same ten queries with the same semantics, and is driven from an equivalent
 Python 3.11 client container with stock server configuration — `shared_buffers`
-at its 128 MB default, which is smaller than the corpus. It is deliberately
-**not** given a normalized relational schema: no `movies` table of typed columns,
-no `movie_genres` junction table. That would be a third data model answering a
-different question. The question here is narrow and worth asking plainly: *on
-unstructured data, keyed two different ways, did choosing a key-value store buy
-anything?*
+at its 128 MB default, which is smaller than the corpus. In that shape it answers
+one narrow question, and it is worth asking plainly: *on unstructured data, keyed
+two different ways, did choosing a key-value store buy anything?*
+
+PostgreSQL also carries a **third model, R** — third normal form, typed columns,
+a `movie_genres` junction table, no JSON (`POSTGRES_R_DDL` in `common/keyspec.py`;
+results in `bench/results/report-with-r.md`). That is a different data model
+answering a different question, and it is kept separate for exactly that reason:
+L1 and L2 ask how a relational engine copes with a key-value model, R asks what
+the relational model itself costs on this corpus. Model R was measured on
+**2026-09-15**, in its own sitting — everything else in this document is from the
+single run of 2026-09-13, and any table that puts an R number beside a key-value
+one says so.
 
 One thing about it is not like-for-like and has to be declared wherever its
 numbers appear. **PostgreSQL's L2 fallback runs inside the server.** When L2 has

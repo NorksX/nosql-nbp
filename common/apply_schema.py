@@ -53,11 +53,20 @@ FDB_PREFIXES = {
 POSTGRES_DDL = {
     "l1": keyspec.POSTGRES_L1_DDL + keyspec.POSTGRES_L1_INDEX_DDL,
     "l2": keyspec.POSTGRES_L2_DDL + keyspec.POSTGRES_L2_INDEX_DDL,
+    "r": keyspec.POSTGRES_R_DDL + keyspec.POSTGRES_R_INDEX_DDL,
 }
 POSTGRES_TABLES = {
     "l1": (keyspec.POSTGRES_L1_TABLE,),
     "l2": keyspec.POSTGRES_L2_TABLES,
+    # Dropped in this order: children before parents, or the foreign keys
+    # refuse. POSTGRES_R_TABLES is already stored that way.
+    "r": keyspec.POSTGRES_R_TABLES,
 }
+
+
+def _fail(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return 2
 
 
 def detect_database(override: str | None = None) -> str:
@@ -166,8 +175,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         action="append",
-        choices=("l1", "l2"),
-        help="which schema to apply; repeat for both (default: both)",
+        choices=("l1", "l2", "r"),
+        help="which schema to apply; repeat to combine (default: l1 and l2). "
+             "`r` is the normalized relational model and exists only on "
+             "PostgreSQL — the two key-value stores have no equivalent.",
     )
     parser.add_argument(
         "--db",
@@ -188,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
 
     models = args.model or ["l1", "l2"]
     database = detect_database(args.db)
+
+    if "r" in models and database != "postgres":
+        return _fail("model `r` is relational and only exists on PostgreSQL")
 
     targets_for = {
         "oracle": ORACLE_TABLES,

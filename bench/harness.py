@@ -12,7 +12,10 @@ Protocol
 Correctness first: every query is executed once under L1 and once under L2 and
 the two results must be identical before either is timed. A query whose two
 models disagree is reported and *not* benchmarked — a latency for a wrong
-answer would be worse than no number at all.
+answer would be worse than no number at all. The relational model R has no
+sibling to be compared against, so for it that gate lives in bench/answers.py
+instead, which compares every database against every other and against the
+answers computed directly from data/.
 
 Then, per (query, model): discard warm-up runs, take `iterations` timed runs,
 report p50 / p95 / p99. Iteration counts are per query class, scaled down for
@@ -30,13 +33,22 @@ import sys
 import time
 from pathlib import Path
 
-from bench.queries import FdbBackend, OracleBackend, PostgresBackend
+from bench.queries import (
+    FdbBackend,
+    OracleBackend,
+    PostgresBackend,
+    RelationalBackend,
+)
 from common.apply_schema import detect_database
 
 BACKENDS = {
     "oracle": OracleBackend,
     "fdb": FdbBackend,
     "postgres": PostgresBackend,
+    # Same server as `postgres`, different schema: the normalized relational
+    # model. It has one model (R) instead of two, so it must be asked for
+    # explicitly with --db; PG_DSN alone resolves to the key-value models.
+    "postgres-r": RelationalBackend,
 }
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -89,6 +101,10 @@ DEGRADES_TO_SCAN = {
     # read every row, whatever the clock says.
     ("postgresql", "L1"): {"q8", "q9", "q10"},
     ("postgresql", "L2"): {"q1", "q2", "q4", "q5"},
+    # Model R indexes every predicate the query set filters on, so the only
+    # paths that read the whole table are the three aggregates — and even
+    # those are joins rather than scans of a JSON column.
+    ("postgresql-relational", "R"): {"q8", "q9", "q10"},
 }
 
 
@@ -139,7 +155,7 @@ def measure(fn, iterations: int, warmup: int) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark L1 vs L2 on one database.")
-    parser.add_argument("--db", choices=("oracle", "fdb", "postgres"))
+    parser.add_argument("--db", choices=tuple(BACKENDS))
     parser.add_argument("--only", help="comma-separated query ids, e.g. q1,q8")
     parser.add_argument("--tag", help="suffix for the results file, e.g. cpus1 "
                         "writes <database>-cpus1.csv instead of <database>.csv")
@@ -147,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     database = detect_database(args.db)
     backend = BACKENDS[database]()
+    models = getattr(backend, "MODELS", ("l1", "l2"))
     wanted = set(args.only.split(",")) if args.only else None
 
     print(f"database: {backend.name}")
@@ -162,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"{qid}  {description}")
         results = {}
-        for model in ("l1", "l2"):
+        for model in models:
             start = time.perf_counter()
             results[model] = backend.run(model, qid)
             elapsed = (time.perf_counter() - start) * 1000
@@ -178,17 +195,23 @@ def main(argv: list[str] | None = None) -> int:
                       f"{'declared' if declared else 'not declared'} a full scan")
             results[f"{model}_slow"] = declared
 
-        if not results_match(results["l1"], results["l2"]):
-            mismatches.append(qid)
-            print(f"   MISMATCH — not benchmarked")
-            print(f"      L1: {canonical(results['l1'])[:160]}")
-            print(f"      L2: {canonical(results['l2'])[:160]}")
-            continue
+        # With two models the harness can gate on them agreeing with each
+        # other. With one it cannot, and `python -m bench.answers --compare`
+        # is what checks that model against the other databases and against
+        # the brute-force answers computed from data/.
+        if len(models) > 1:
+            first, second = models
+            if not results_match(results[first], results[second]):
+                mismatches.append(qid)
+                print("   MISMATCH — not benchmarked")
+                print(f"      {first.upper()}: {canonical(results[first])[:160]}")
+                print(f"      {second.upper()}: {canonical(results[second])[:160]}")
+                continue
 
-        answer = canonical(results["l1"])
+        answer = canonical(results[models[0]])
         print(f"   = {answer[:100]}{'...' if len(answer) > 100 else ''}")
 
-        for model in ("l1", "l2"):
+        for model in models:
             scan = results[f"{model}_slow"]
             n = SCAN_ITERATIONS if scan else iterations
             w = SCAN_WARMUP if scan else warmup
@@ -219,9 +242,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {out.relative_to(Path.cwd()) if out.is_relative_to(Path.cwd()) else out}")
 
     if mismatches:
-        print(f"\nFAILED: L1/L2 disagree on {', '.join(mismatches)}")
+        print(f"\nFAILED: {'/'.join(m.upper() for m in models)} disagree on "
+              f"{', '.join(mismatches)}")
         return 1
-    print("\nL1 and L2 agreed on every query.")
+    if len(models) > 1:
+        print(f"\n{' and '.join(m.upper() for m in models)} agreed on every query.")
+    else:
+        print(f"\nModel {models[0].upper()} ran clean. It has no sibling model to "
+              "be checked against here — run `python -m bench.answers --compare` "
+              "to verify it against the other databases.")
     return 0
 
 

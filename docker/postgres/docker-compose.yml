@@ -33,6 +33,17 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5433:5432" # host 5433 to avoid colliding with a local PostgreSQL
+    # Docker gives a container 64 MB of /dev/shm by default, and PostgreSQL
+    # passes tuples between a parallel worker and its leader through POSIX
+    # shared memory. One parallel aggregate is fine; sixteen concurrent clients
+    # each spawning two workers is not, and query 8 on model R fails outright
+    # with "could not resize shared memory segment ... No space left on device".
+    #
+    # This is a container default, not a database setting: raising it removes an
+    # artificial limit rather than tuning PostgreSQL, and the server's own
+    # configuration stays stock. Neither key-value store needs it, because
+    # neither parallelizes a single query — which is itself the finding.
+    shm_size: 1gb
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks: [pgnet]
